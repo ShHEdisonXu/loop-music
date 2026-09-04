@@ -1,0 +1,15 @@
+# deps
+node_modules/
+
+# runtime data & backup
+backend/data/
+backend/backup_*/
+backend/config.js.bak.*
+backend/ncm_cookie.txt
+backend/settings.json
+backend/.health
+
+# misc
+*.log
+*.tgz
+.DS_Store

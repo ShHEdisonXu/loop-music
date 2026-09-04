@@ -1,0 +1,697 @@
+// 音乐路由：搜索/播放/歌词（转发 api-enhanced）
+const express = require('express');
+const axios = require('axios');
+const router = express.Router();
+const netease = require('../services/netease');
+
+// 搜索歌曲
+router.get('/searchSong', async (req, res) => {
+  try {
+    const { keyword, pageSize = 20, pageIndex = 1 } = req.query;
+    if (!keyword) return res.json({ code: 500, msg: '关键词不能为空' });
+    const data = await netease.searchSong(keyword, parseInt(pageSize), parseInt(pageIndex));
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('searchSong 失败:', e.message);
+    res.json({ code: 500, msg: '搜索失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 搜索提示
+router.get('/searchTips', async (req, res) => {
+  try {
+    const { keyword } = req.query;
+    const data = await netease.searchTips(keyword || '');
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 200, data: [], msg: 'success' });
+  }
+});
+
+// 获取播放/下载直链（含音质降级回退：高音质取不到时依次降级，直到 standard）
+router.post('/getDownloadUrl', async (req, res) => {
+  try {
+    const { id, brType } = req.body || {};
+    if (!id) return res.json({ code: 500, msg: '缺少歌曲ID' });
+    // 降级链：hires > lossless > exhigh > higher > standard
+    const brChain = ['hires', 'lossless', 'exhigh', 'higher', 'standard'];
+    let startIdx = brChain.indexOf(String(brType || '').toLowerCase());
+    if (startIdx === -1) startIdx = 1; // 未指定或非法音质时从 lossless 开始
+    let urlInfo = null;
+    for (let i = startIdx; i < brChain.length; i++) {
+      urlInfo = await netease.getSongUrl(id, brChain[i]);
+      if (urlInfo && urlInfo.url) break;
+    }
+    if (!urlInfo || !urlInfo.url) return res.json({ code: 500, msg: '无法获取播放链接' });
+    res.json({ code: 200, data: { url: urlInfo.url, br: urlInfo.br, size: urlInfo.size }, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: '获取链接失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 获取歌词
+router.post('/getLyric', async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    if (!id) return res.json({ code: 500, msg: '缺少歌曲ID' });
+    const data = await netease.getLyric(id);
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 200, data: { lyric: '' }, msg: 'success' });
+  }
+});
+
+// 歌手信息（含专辑列表）
+router.get('/artistAlbumById', async (req, res) => {
+  try {
+    const { id } = req.query;
+    if (!id) return res.json({ code: 500, msg: '缺少歌手ID' });
+    const data = await netease.getArtistInfo(id);
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('artistAlbumById 失败:', e.message);
+    res.json({ code: 500, msg: '获取歌手信息失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 专辑信息
+router.get('/albumInfoById', async (req, res) => {
+  try {
+    const { id } = req.query;
+    if (!id) return res.json({ code: 500, msg: '缺少专辑ID' });
+    const resp = await netease.getAlbumDetail(id);
+    res.json({ code: 200, data: resp, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: '获取专辑失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 搜索专辑
+router.get('/searchAlbum', async (req, res) => {
+  try {
+    const { keyword, pageSize = 20, pageIndex = 1 } = req.query;
+    if (!keyword) return res.json({ code: 500, msg: '关键词不能为空' });
+    const data = await netease.searchAlbum(keyword, parseInt(pageSize), parseInt(pageIndex));
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('searchAlbum 失败:', e.message);
+    res.json({ code: 500, msg: '搜索专辑失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 搜索歌手
+router.get('/searchArtist', async (req, res) => {
+  try {
+    const { keyword, pageSize = 20, pageIndex = 1 } = req.query;
+    if (!keyword) return res.json({ code: 500, msg: '关键词不能为空' });
+    const data = await netease.searchArtist(keyword, parseInt(pageSize), parseInt(pageIndex));
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('searchArtist 失败:', e.message);
+    res.json({ code: 500, msg: '搜索歌手失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 搜索歌单
+router.get('/searchPlaylist', async (req, res) => {
+  try {
+    const { keyword, pageSize = 20, pageIndex = 1 } = req.query;
+    if (!keyword) return res.json({ code: 500, msg: '关键词不能为空' });
+    const data = await netease.searchPlaylist(keyword, parseInt(pageSize), parseInt(pageIndex));
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('searchPlaylist 失败:', e.message);
+    res.json({ code: 500, msg: '搜索歌单失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 按首字母获取歌手列表（A-Z，网易云数据）
+// area：-1 全部 / 7 华语 / 96 欧美 / 8 日本 / 16 韩国 / 0 其他，支持逗号分隔合并（如 8,16=日韩）
+router.get('/artistList', async (req, res) => {
+  try {
+    const { initial = '', pageSize = 30, pageIndex = 1, area = -1 } = req.query;
+    const data = await netease.getArtistList(initial, parseInt(pageSize), parseInt(pageIndex), area);
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('artistList 失败:', e.message);
+    res.json({ code: 500, msg: '获取歌手列表失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 网易云榜单列表
+router.get('/toplist', async (req, res) => {
+  try {
+    const data = await netease.getToplist();
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('toplist 失败:', e.message);
+    res.json({ code: 500, msg: '获取榜单失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 热门歌单（网易云 /top/playlist）
+router.get('/topPlaylist', async (req, res) => {
+  try {
+    const { cat = '全部', limit = 12 } = req.query;
+    const data = await netease.getTopPlaylist(cat, parseInt(limit));
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('topPlaylist 失败:', e.message);
+    res.json({ code: 500, msg: '获取热门歌单失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 歌单/榜单详情（信息 + 歌曲列表）
+router.get('/playlistDetail', async (req, res) => {
+  try {
+    const { id } = req.query;
+    if (!id) return res.json({ code: 500, msg: '缺少歌单ID' });
+    const data = await netease.getPlaylistDetail(id);
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('playlistDetail 失败:', e.message);
+    res.json({ code: 500, msg: '获取歌单详情失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// ===== 网易云主页模块 =====
+
+// 轮播 Banner
+router.get('/banner', async (req, res) => {
+  try {
+    const data = await netease.getBanner();
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('banner 失败:', e.message);
+    res.json({ code: 500, msg: '获取Banner失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 新歌速递
+router.get('/newSongs', async (req, res) => {
+  try {
+    const { limit = 20 } = req.query;
+    const data = await netease.getNewSongs(parseInt(limit));
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('newSongs 失败:', e.message);
+    res.json({ code: 500, msg: '获取新歌失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 新碟上架
+router.get('/newAlbums', async (req, res) => {
+  try {
+    const { limit = 10 } = req.query;
+    const data = await netease.getNewAlbums(parseInt(limit));
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('newAlbums 失败:', e.message);
+    res.json({ code: 500, msg: '获取新碟失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 个性化推荐歌单
+router.get('/recommendPlaylist', async (req, res) => {
+  try {
+    const { limit = 12 } = req.query;
+    const data = await netease.getRecommendPlaylist(parseInt(limit));
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('recommendPlaylist 失败:', e.message);
+    res.json({ code: 500, msg: '获取推荐歌单失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// ===== 网易云账号登录（二维码）=====
+
+// 获取二维码 key
+router.get('/qrKey', async (req, res) => {
+  try {
+    const data = await netease.createQrKey();
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('qrKey 失败:', e.message);
+    res.json({ code: 500, msg: '获取二维码key失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 生成二维码（含图片）
+router.get('/qrCreate', async (req, res) => {
+  try {
+    const { key } = req.query;
+    if (!key) return res.json({ code: 500, msg: '缺少key' });
+    const data = await netease.createQrCode(key);
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('qrCreate 失败:', e.message);
+    res.json({ code: 500, msg: '生成二维码失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 轮询扫码状态
+router.get('/qrStatus', async (req, res) => {
+  try {
+    const { key } = req.query;
+    if (!key) return res.json({ code: 500, msg: '缺少key' });
+    const data = await netease.checkQrStatus(key);
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('qrStatus 失败:', e.message);
+    res.json({ code: 500, msg: '查询扫码状态失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 当前登录状态（用户信息）
+router.get('/loginStatus', async (req, res) => {
+  try {
+    const data = await netease.getLoginStatus();
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('loginStatus 失败:', e.message);
+    res.json({ code: 200, data: { loggedIn: false }, msg: 'success' });
+  }
+});
+
+// 用户歌单
+router.get('/userPlaylist', async (req, res) => {
+  try {
+    const { uid, limit = 50 } = req.query;
+    if (!uid) return res.json({ code: 500, msg: '缺少uid' });
+    const data = await netease.getUserPlaylist(uid, parseInt(limit));
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('userPlaylist 失败:', e.message);
+    res.json({ code: 500, msg: '获取用户歌单失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 网易云退出登录
+router.post('/neteaseLogout', async (req, res) => {
+  try {
+    const data = await netease.neteaseLogout();
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('neteaseLogout 失败:', e.message);
+    res.json({ code: 500, msg: '退出失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// ===================== 酷我音源 =====================
+const kuwo = require('../services/kuwo');
+
+// 酷我搜索
+router.get('/kuwo/search', async (req, res) => {
+  try {
+    const { keyword, page = 0, size = 30 } = req.query;
+    if (!keyword) return res.json({ code: 500, msg: '关键词不能为空' });
+    const data = await kuwo.search(keyword, parseInt(page), parseInt(size));
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('kuwo search 失败:', e.message);
+    res.json({ code: 500, msg: '酷我搜索失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 酷我取链（播放/下载）
+router.get('/kuwo/url', async (req, res) => {
+  try {
+    const { rid, format = 'mp3', br = '' } = req.query;
+    if (!rid) return res.json({ code: 500, msg: '缺少rid' });
+    const url = await kuwo.getPlayUrl(rid, format, br);
+    if (!url) return res.json({ code: 500, msg: '酷我取链失败（可能为付费歌曲）' });
+    res.json({ code: 200, data: { url }, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: '酷我取链失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 酷我榜单分类
+router.get('/kuwo/bangmenu', async (req, res) => {
+  try {
+    const data = await kuwo.getBangMenu();
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: '酷我榜单获取失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 酷我榜单歌曲
+router.get('/kuwo/banglist', async (req, res) => {
+  try {
+    const { bangId, pn = 1, rn = 20 } = req.query;
+    if (!bangId) return res.json({ code: 500, msg: '缺少bangId' });
+    const data = await kuwo.getBangList(bangId, parseInt(pn), parseInt(rn));
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: '酷我榜单获取失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// ===================== QQ 音源 =====================
+const qq = require('../services/qq');
+
+// QQ 搜索
+router.get('/qq/search', async (req, res) => {
+  try {
+    const { keyword, page = 1, size = 20 } = req.query;
+    if (!keyword) return res.json({ code: 500, msg: '关键词不能为空' });
+    const data = await qq.search(keyword, parseInt(page), parseInt(size));
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: 'QQ搜索失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// QQ 取链（播放/下载）
+router.get('/qq/url', async (req, res) => {
+  try {
+    const { songmid, brType } = req.query;
+    if (!songmid) return res.json({ code: 500, msg: '缺少songmid' });
+    const r = await qq.getPlayUrl(songmid, brType);
+    if (!r.url) return res.json({ code: 500, msg: r.msg || 'QQ取链失败' });
+    res.json({ code: 200, data: { url: r.url, br: r.br || '' }, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: 'QQ取链失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// QQ 榜单列表
+router.get('/qq/toplist', async (req, res) => {
+  try {
+    const data = await qq.getToplist();
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: 'QQ榜单获取失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// QQ 榜单详情
+router.get('/qq/toplistdetail', async (req, res) => {
+  try {
+    const { topid } = req.query;
+    if (!topid) return res.json({ code: 500, msg: '缺少topid' });
+    const data = await qq.getToplistDetail(topid);
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: 'QQ榜单获取失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// ===== 酷狗（Kugou）音源：灰色/VIP 歌曲播放兜底（无需登录，常可取完整版） =====
+const kugou = require('../services/kugou');
+
+// 酷狗搜索
+router.get('/kugou/search', async (req, res) => {
+  try {
+    const { keyword, page = 1, size = 20 } = req.query;
+    if (!keyword) return res.json({ code: 500, msg: '关键词不能为空' });
+    const data = await kugou.search(keyword, parseInt(page), parseInt(size));
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: '酷狗搜索失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 酷狗取链（播放/下载）：按 FileHash + AlbumID 取完整播放直链，返回 url/duration 供前端试听识别
+router.get('/kugou/url', async (req, res) => {
+  try {
+    const { hash, albumId, minDuration } = req.query;
+    if (!hash) return res.json({ code: 500, msg: '缺少hash' });
+    const opts = {};
+    const md = parseInt(minDuration, 10);
+    if (md > 0) opts.minDuration = md;
+    const r = await kugou.getPlayUrlByHash(hash, albumId || '', opts);
+    if (!r || !r.url) return res.json({ code: 500, msg: '酷狗取链失败（可能无完整版本）' });
+    res.json({ code: 200, data: { url: r.url, duration: r.duration || 0, br: r.br || '', ext: r.ext || '' }, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: '酷狗取链失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// ===== 酷我 / QQ 主页推荐（banner / 推荐歌单 / 新歌），返回统一归一化格式 =====
+
+// ---- 酷我 ----
+// 酷我官网已下线匿名 banner / 推荐歌单 API（404），主页模块由榜单聚合承担；此处返回空以隐藏模块
+router.get('/kuwo/banner', async (req, res) => {
+  res.json({ code: 200, data: [], msg: 'success' });
+});
+
+router.get('/kuwo/recplaylist', async (req, res) => {
+  res.json({ code: 200, data: [], msg: 'success' });
+});
+
+router.get('/kuwo/newsongs', async (req, res) => {
+  try {
+    const rn = parseInt(req.query.limit || 20);
+    // 酷我新歌榜老编号=17（musicList 接口仅认老编号，bangMenu 的 sourceid 即老编号）
+    const d = await kuwo.getBangList(17, 1, rn);
+    const arr = (d && d.data && d.data.musicList) || [];
+    const list = arr.map((t) => ({
+      id: String(t.musicrid != null ? t.musicrid : t.rid != null ? t.rid : ''),
+      rid: t.musicrid != null ? t.musicrid : t.rid,
+      musicName: t.name || t.songName || '',
+      musicArtists: (typeof t.artist === 'string') ? t.artist : (t.artist || '未知歌手'),
+      musicAlbum: t.album || '',
+      musicImage: t.albumpic || t.pic || '',
+      musicDuration: t.duration || 0,
+      plugName: 'kuwo'
+    }));
+    res.json({ code: 200, data: list, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: '酷我新歌失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// ---- QQ ----
+router.get('/qq/banner', async (req, res) => {
+  try {
+    const d = await qq.getBanner();
+    const arr = (d && d.data && d.data.slider) || [];
+    const list = arr.map((b) => ({
+      id: String(b.id != null ? b.id : Math.random()),
+      title: b.title || '',
+      pic: (b.picUrl && b.picUrl.replace('http://', 'https://')) || '',
+      url: b.linkUrl || ''
+    }));
+    res.json({ code: 200, data: list, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: 'QQ Banner失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+router.get('/qq/recplaylist', async (req, res) => {
+  try {
+    const sin = parseInt(req.query.sin || 0);
+    const ein = parseInt(req.query.ein || 19);
+    const d = await qq.getRecPlaylist(sin, ein);
+    const arr = (d && d.data && d.data.list) || [];
+    const list = arr.map((p) => ({
+      id: String(p.dissid != null ? p.dissid : ''),
+      name: p.dissname || 'QQ歌单',
+      cover: (p.imgurl && p.imgurl.replace('http://', 'https://')) || '',
+      playCount: p.listennum || p.listen_num || 0,
+      creator: (p.creator && p.creator.name) || 'QQ音乐',
+      trackCount: p.song_cnt || 0
+    }));
+    res.json({ code: 200, data: list, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: 'QQ推荐歌单失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+router.get('/qq/newsongs', async (req, res) => {
+  try {
+    const d = await qq.getToplistDetail('26'); // topid=26 = QQ 新歌榜
+    const arr = (d && d.songlist) || [];
+    const list = arr.map((t) => {
+      const x = (t && t.data) || t;
+      const singers = Array.isArray(x.singer) ? x.singer.map((sn) => (sn && sn.name) || '').filter(Boolean).join(' / ') : (x.singer ? (x.singer.name || x.singer) : '');
+      return {
+        id: String(x.songmid || x.songid || ''),
+        songmid: x.songmid || '',
+        musicName: x.songname || x.name || '',
+        musicArtists: singers || '未知歌手',
+        musicAlbum: x.albumname || '',
+        musicImage: (x.albummid ? 'https://y.gtimg.cn/music/photo_new/T002R300x300M000' + x.albummid + '.jpg' : ''),
+        musicDuration: (x.interval || 0) * 1000,
+        plugName: 'qq'
+      };
+    });
+    res.json({ code: 200, data: list, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: 'QQ新歌失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// ===== GD 音乐台聚合换源播放取链（服务端免签名直连官方开放 API，source 依次尝试由前端驱动）=====
+// 透传 GD types=url（聚合换源，返回完整直链）；可选 name 参数用 GD search 校验歌曲真实时长，
+// duration < 45s 视为试听片段（与 downloader.assertNotPreview 同口径），由前端自动切下一 source。
+router.get('/gdplay', async (req, res) => {
+  try {
+    const { id, source = 'netease', brType = 'lossless', name = '' } = req.query;
+    if (!id) return res.json({ code: 500, msg: '缺少歌曲ID' });
+    const gd = require('../services/gd');
+    const src = gd.normalizeSource(source); // 非法 source 回退官方稳定首源 netease
+    const info = await gd.getSongUrl(String(id), src, brType);
+    if (!info || !info.url) return res.json({ code: 500, msg: 'GD聚合取链失败' });
+    // 可选：GD search 校验该歌在 GD 侧的完整时长（用于试听判断，避免前端下载探测）
+    let duration = 0;
+    if (name) {
+      try {
+        const arr = await gd.gdRequest({ types: 'search', source: src, name, count: 10, pages: 1 });
+        const list = Array.isArray(arr) ? arr : [];
+        // 官方 search 返回 id 即 track_id（url_id 已废弃），按 id 精确匹配
+        const hit = list.find((i) => i && String(i.id != null ? i.id : '') === String(id)) || list[0];
+        if (hit && hit.extra_data) duration = hit.extra_data.duration || 0;
+      } catch (e) { /* 时长校验失败不阻塞取链，由前端探测兜底 */ }
+    }
+    res.json({
+      code: 200,
+      data: { url: info.url, br: info.br, size: info.size, duration, source: src, preview: duration > 0 && duration < 45 },
+      msg: 'success'
+    });
+  } catch (e) {
+    res.json({ code: 500, msg: 'GD聚合取链失败: ' + (e && e.message ? e.message : e) });
+  }
+});
+
+// ===== 网易云主页聚合：banner + 推荐歌单 + 新歌速递 + 热门歌单 =====
+router.get('/homepage', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 12, 30);
+    // ncm 源偶发限流，带一次重试
+    const tryGet = async (fn, fallback) => {
+      for (let i = 0; i < 2; i++) {
+        try { const r = await fn(); if (Array.isArray(r) && r.length) return r; } catch (e) {}
+      }
+      return fallback;
+    };
+    const [banner, recommend, newSongs, topPlaylists] = await Promise.all([
+      tryGet(() => netease.getBanner(), []),
+      tryGet(() => netease.getRecommendPlaylist(limit), []),
+      tryGet(() => netease.getNewSongs(limit), []),
+      tryGet(() => netease.getTopPlaylist('全部', 8), [])
+    ]);
+    res.json({ code: 200, data: { banner, recommend, newSongs: newSongs.slice(0, limit), topPlaylists }, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 500, msg: '获取主页失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// ===== 播放聚合取链：完整版优先（全界面统一）=====
+// 策略：按候选顺序取链，每个候选做"试听识别"——优先用取链响应自带的权威时长（秒），
+// 否则用 HEAD 探测直链 Content-Length 粗判（试听片段体积远小于完整曲目）。
+// 命中第一个完整版立即返回；全部候选仅试听时兜底返回最强试听并标记 preview:true（前端打"试听"标）。
+// 各候选源顺位：指定 source → 网易云 id 兜底 → 跨源搜索(kuwo → kugou → qq → netease)。酷狗 playInfo 自带
+// 权威时长且对版权歌命中率高，放跨源第 2 位；尾部用 length<45s 的探测无法覆盖的源做最后兜底。
+const FRAGMENT_BYTES = 2.5 * 1024 * 1024; // 试听片段体积护栏：30s*128kbps≈480KB，完整曲目极少小于 2.5MB
+
+// HEAD 探测音频直链的 Content-Length（跟随重定向；失败回退 Range GET；仍失败返回 0）
+async function probeUrlSize(url) {
+  if (!url) return 0;
+  try {
+    const head = await axios.head(url, { timeout: 8000, maxRedirects: 4, validateStatus: () => true });
+    const cl = parseInt(head.headers['content-length'] || '0', 10);
+    if (cl > 0) return cl;
+  } catch (e) { /* fallthrough */ }
+  try {
+    const get = await axios.get(url, {
+      timeout: 8000, maxRedirects: 4, validateStatus: () => true,
+      responseType: 'stream', headers: { Range: 'bytes=0-1023' },
+    });
+    const cr = String(get.headers['content-range'] || '/0').split('/')[1] || '0';
+    const cl = parseInt(get.headers['content-length'] || cr, 10) || 0;
+    if (get.data && typeof get.data.destroy === 'function') get.data.destroy();
+    return cl;
+  } catch (e) { return 0; }
+}
+
+// 是否试听/片段：候选带权威时长→短于 45s 或短于目标曲目 60%；无时长→按探测体积过小判片段
+function isFragment(url, size, durationSec, refSec) {
+  if (durationSec) {
+    const minFull = refSec > 0 ? Math.min(45, refSec * 0.6) : 45;
+    return durationSec < minFull;
+  }
+  return size > 0 && size < FRAGMENT_BYTES;
+}
+
+router.post('/play', async (req, res) => {
+  try {
+    const { source, id, rid, songmid, hash, albumId, name, artist, brType, duration } = req.body || {};
+    const kw = [name, artist && artist !== '未知' ? artist : ''].filter(Boolean).join(' ').trim();
+    const refSec = (parseInt(duration, 10) || 0) / 1000;
+    const brChain = ['hires', 'lossless', 'exhigh', 'higher', 'standard'];
+    const br = String(brType || '').toLowerCase();
+
+    const fallbackRef = { url: null }; // 兜底：仅试听可用时的最优候选
+    const bestPreview = { url: '', br: '', source: '', durationSec: 0, size: 0 };
+
+    // 单一候选验收：完整→立即响应；试听→记录兜底并继续
+    const emit = (data) => { if (data) res.json({ code: 200, data, msg: 'success' }); };
+    const accept = async (cand, src) => {
+      if (!cand || !cand.url) return false;
+      const c = { url: cand.url, br: cand.br || '', source: src, durationSec: cand.durationSec || 0, size: cand.size || 0 };
+      if (isFragment(c.url, c.size, c.durationSec, refSec)) {
+        if (!bestPreview.url) { bestPreview.url = c.url; bestPreview.br = c.br; bestPreview.source = c.source; bestPreview.durationSec = c.durationSec; }
+        return false;
+      }
+      emit({ url: c.url, br: c.br, source: c.source, duration: c.durationSec, preview: false });
+      return true;
+    };
+
+    const neteaseUrl = async (songId) => {
+      let startIdx = brChain.indexOf(br);
+      if (startIdx === -1) startIdx = 1;
+      for (let i = startIdx; i < brChain.length; i++) {
+        const u = await netease.getSongUrl(songId, brChain[i]);
+        if (u && u.url) return { url: u.url, br: brChain[i], size: u.size || await probeUrlSize(u.url), source: 'netease' };
+      }
+      return null;
+    };
+
+    // 1) 指定来源优先
+    try {
+      if (source === 'netease' && id) { const r = await neteaseUrl(id); if (await accept(r, 'netease')) return; }
+      if (source === 'kuwo' && rid) {
+        const u = await kuwo.getPlayUrl(rid, 'mp3', '');
+        if (await accept(u ? { url: u, source: 'kuwo', size: await probeUrlSize(u) } : null, 'kuwo')) return;
+      }
+      if (source === 'qq' && songmid) {
+        const u = await qq.getPlayUrl(songmid, br || 'standard');
+        if (await accept(u && u.url ? { url: u.url, source: 'qq', br: u.br || '', size: await probeUrlSize(u.url) } : null, 'qq')) return;
+      }
+      if (source === 'kugou' && hash) {
+        const u = await kugou.getPlayUrlByHash(hash, albumId || '', { minDuration: 45 });
+        if (await accept(u ? { url: u.url, source: 'kugou', durationSec: u.duration, br: u.br || '', size: u.size || 0 } : null, 'kugou')) return;
+      }
+    } catch (e) {}
+
+    // 2) 持网易云 id 时的空闲兜底
+    if (id && source !== 'netease') { const r = await neteaseUrl(id); if (await accept(r, 'netease')) return; }
+
+    // 3) 按歌名+歌手跨源搜索兜底（kuwo → kugou → qq → netease）
+    if (kw.length >= 2) {
+      const fallbacks = [
+        { src: 'kuwo', fn: async () => { const rs = await kuwo.search(kw, 0, 5); const r0 = rs && rs.records && rs.records[0]; if (!r0 || !r0.rid) return null; const u = await kuwo.getPlayUrl(r0.rid, 'mp3', ''); return u ? { url: u, source: 'kuwo', size: await probeUrlSize(u) } : null; } },
+        { src: 'kugou', fn: async () => { const rs = await kugou.search(kw, 1, 5); const r0 = rs && rs.records && rs.records[0]; if (!r0 || !r0.hash) return null; const g = await kugou.getPlayUrlByHash(r0.hash, r0.albumId || '', { minDuration: 45 }); return g ? { url: g.url, source: 'kugou', durationSec: g.duration, br: g.br || 0 } : null; } },
+        { src: 'qq', fn: async () => { const rs = await qq.search(kw, 1, 5); const r0 = rs && rs.records && rs.records[0]; if (!r0 || !r0.songmid) return null; const u = await qq.getPlayUrl(r0.songmid, 'standard'); return u && u.url ? { url: u.url, source: 'qq', br: u.br || '', size: await probeUrlSize(u.url) } : null; } },
+        { src: 'netease', fn: async () => { const rs = await netease.searchSong(kw, 5, 1); const r0 = rs && rs.records && rs.records[0]; if (!r0 || !r0.id) return null; return neteaseUrl(r0.id); } },
+      ];
+      for (const f of fallbacks) {
+        try { const r = await f.fn(); if (await accept(r, r.source || f.src)) return; } catch (e) {}
+      }
+    }
+
+    // 4) 全部候选仅试听 → 兜底播放最强试听并明确标记 preview:true
+    if (bestPreview.url) {
+      emit({ url: bestPreview.url, br: bestPreview.br, source: bestPreview.source, duration: bestPreview.durationSec, preview: true });
+      return;
+    }
+    res.json({ code: 500, msg: '所有音源均无法获取完整播放链接' });
+  } catch (e) {
+    res.json({ code: 500, msg: '获取播放链接失败: ' + (e && e.message ? e.message : e).slice(0, 100) });
+  }
+});
+
+module.exports = router;

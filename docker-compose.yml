@@ -1,0 +1,25 @@
+services:
+  loop-app:
+    # 公开镜像地址（二选一，按拉取速度取舍）：
+    #   ghcr.io/shhedisonxu/loop-music   ← 海外/直连快
+    #   shhedisonxu/loop-music           ← Docker Hub，国产 NAS 更稳（需另行发布）
+    image: ghcr.io/shhedisonxu/loop-music
+    container_name: loop-app
+    restart: unless-stopped
+    ports:
+      - "23238:80"          # 网页入口（浏览器访问 http://<主机IP>:23238）
+      - "23237:3001"        # 后端 API
+      - "23236:23236"       # ncm-api 网关 1
+      - "23240:23240"       # ncm-api 网关 2
+    environment:
+      - NCM_API_BASE=http://127.0.0.1:23236,http://127.0.0.1:23240
+      - MUSIC_ROOT=/Music
+    volumes:
+      - ./Music:/Music              # 音乐库（下载/扫描根目录），请改成本地实际路径
+      - ./loop-data:/app/data       # 后端配置与 Cookie（settings.json / ncm_cookie.txt）
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3

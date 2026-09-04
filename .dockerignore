@@ -1,0 +1,18 @@
+# 运行时/本地数据与备份，不进镜像与仓库
+backend/data
+backend/backup_*
+backend/config.js.bak.*
+backend/diag*.js
+backend/ncm_cookie.txt
+backend/settings.json
+backend/*.tgz
+backend/*.log
+backend/.health
+backend/Dockerfile*
+**/._*
+.DS_Store
+.git
+.github
+
+# node_modules 由 Dockerfile 内 npm ci 生成，不入构建上下文
+**/node_modules

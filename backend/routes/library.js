@@ -540,8 +540,8 @@ router.get('/meta/cover', async (req, res) => {
   try {
     const out = await localLibrary.extractCoverById(id);
     if (!out) return res.status(404).json({ code: 404, msg: '该文件无内嵌封面' });
-    // 元数据修改后封面需即时生效：禁止强缓存（no-cache = 每次回源校验，重新提取内嵌封面）
-    res.set('Cache-Control', 'no-cache');
+    // 封面 1 小时强缓存：列表页上百首封面翻页/重开直接走浏览器缓存，不再反复读盘解析（no-cache 曾是手机端大批 499 卡顿根因）
+    res.set('Cache-Control', 'public, max-age=3600');
     res.set('Content-Type', out.type);
     return res.send(out.buffer);
   } catch (e) {

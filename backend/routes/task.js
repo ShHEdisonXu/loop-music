@@ -5,6 +5,7 @@ const db = require('../services/db');
 const downloader = require('../services/downloader');
 const netease = require('../services/netease');
 const kuwo = require('../services/kuwo');
+const matcher = require('../services/matcher');
 
 // 任务列表（分页 + 筛选）
 router.post('/list', (req, res) => {
@@ -151,34 +152,37 @@ router.post('/switchSource', async (req, res) => {
     const keyword = [task.music_name, task.artist_name].filter(Boolean).join(' ');
     if (!keyword) return res.json({ code: 500, msg: '任务缺少歌曲信息，无法换源' });
 
+    // 换源匹配目标：严格按 歌名+歌手+专辑 三要素一致筛选，拒绝换到翻唱/翻版/伴奏等错误版本
+    const song = { name: task.music_name, artist: task.artist_name, album: task.album_name };
+
     let matched = null;
     let newId = '';
     try {
       if (source === 'netease') {
         const r = await netease.searchSong(keyword, 10, 1);
-        matched = (r && r.records && r.records[0]) || null;
+        matched = matcher.findMatch(song, r && r.records) || null;
         if (matched) newId = String(matched.id || '');
       } else if (source === 'kuwo') {
         const r = await kuwo.search(keyword, 0, 10);
-        matched = (r && r.records && r.records[0]) || null;
+        matched = matcher.findMatch(song, r && r.records) || null;
         if (matched) newId = String(matched.rid || matched.id || '');
       } else if (source === 'kugou') {
         const kugou = require('../services/kugou');
         const r = await kugou.search(keyword, 1, 10);
-        matched = (r && r.records && r.records[0]) || null;
+        matched = matcher.findMatch(song, r && r.records) || null;
         if (matched) newId = String(matched.FileHash || matched.hash || matched.id || '');
       } else if (source === 'joox') {
         const gd = require('../services/gd');
-        const sd = await gd.gdRequest({ types: 'search', source: 'joox', name: keyword, pagesize: '5' });
+        const sd = await gd.gdRequest({ types: 'search', source: 'joox', name: keyword, pagesize: '10' });
         const recs = (Array.isArray(sd) ? sd : (sd && sd.records) || []);
-        matched = recs[0] || null;
+        matched = matcher.findMatch(song, recs) || null;
         if (matched) newId = String(matched.url_id || matched.id || '');
       }
     } catch (e) {
       return res.json({ code: 500, msg: '搜索「' + source + '」音源失败: ' + String(e.message || e).slice(0, 80) });
     }
     if (!matched || !newId) {
-      return res.json({ code: 500, msg: '「' + source + '」音源 404 未找到匹配歌曲' });
+      return res.json({ code: 404, msg: '「' + source + '」音源未找到歌名、歌手、专辑完全匹配的版本（可能仅存在翻唱/翻版），已拒绝换源' });
     }
 
     downloader.resetRetry(id);

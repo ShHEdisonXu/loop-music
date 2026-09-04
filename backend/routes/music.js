@@ -4,6 +4,7 @@ const axios = require('axios');
 const router = express.Router();
 const netease = require('../services/netease');
 const scraper = require('../services/scraper');
+const matcher = require('../services/matcher');
 
 // 搜索歌曲
 router.get('/searchSong', async (req, res) => {
@@ -565,10 +566,12 @@ function isFragment(url, size, durationSec, refSec) {
 
 router.post('/play', async (req, res) => {
   try {
-    const { source, id, rid, songmid, hash, albumId, name, artist, brType, duration, force, probe } = req.body || {};
+    const { source, id, rid, songmid, hash, albumId, name, artist, album, brType, duration, force, probe } = req.body || {};
     const forceMode = force === true || force === 'true' || force === 1;
     const probeMode = probe === true || probe === 'true' || probe === 1;
     const kw = [name, artist && artist !== '未知' ? artist : ''].filter(Boolean).join(' ').trim();
+    // 三要素匹配目标（跨源/探测搜索时用于筛选一致版本，杜绝翻唱/翻版）
+    const want = { name: name || '', artist: artist && artist !== '未知' ? artist : '', album: album || '' };
     const refSec = (parseInt(duration, 10) || 0) / 1000;
     const brChain = ['hires', 'lossless', 'exhigh', 'higher', 'standard'];
     const br = String(brType || '').toLowerCase();
@@ -582,8 +585,9 @@ router.post('/play', async (req, res) => {
         if (src === 'netease') {
           let nid = params.id;
           if (!nid && kw.length >= 2) {
-            const rs = await netease.searchSong(kw, 5, 1);
-            nid = rs && rs.records && rs.records[0] && rs.records[0].id;
+            const rs = await netease.searchSong(kw, 10, 1);
+            const hit = matcher.findMatch(want, rs && rs.records) || null;
+            nid = hit && hit.id;
           }
           if (nid) {
             let startIdx = brChain.indexOf(br);
@@ -602,8 +606,9 @@ router.post('/play', async (req, res) => {
         if (src === 'kuwo') {
           let r = params.rid;
           if (!r && kw.length >= 2) {
-            const rs = await kuwo.search(kw, 0, 5);
-            r = rs && rs.records && rs.records[0] && rs.records[0].rid;
+            const rs = await kuwo.search(kw, 0, 10);
+            const hit = matcher.findMatch(want, rs && rs.records) || null;
+            r = hit && (hit.rid || hit.id);
           }
           if (r) {
             const u = await kuwo.getPlayUrl(r, 'mp3', '');
@@ -618,8 +623,8 @@ router.post('/play', async (req, res) => {
           let h = params.hash;
           let aId = params.albumId;
           if (!h && kw.length >= 2) {
-            const rs = await kugou.search(kw, 1, 5);
-            const r0 = rs && rs.records && rs.records[0];
+            const rs = await kugou.search(kw, 1, 10);
+            const r0 = matcher.findMatch(want, rs && rs.records) || null;
             h = r0 && (r0.FileHash || r0.id || r0.hash);
             aId = r0 && (r0.AlbumID || r0.albumId || '');
           }
@@ -633,13 +638,14 @@ router.post('/play', async (req, res) => {
           return { source: 'kugou', ok: false, preview: false };
         }
         if (src === 'joox') {
-          // GD-joox：平台内 url_id 取直链探测；缺 id 时按 歌名+歌手 GD 搜索取首条
+          // GD-joox：平台内 url_id 取直链探测；缺 id 时按 歌名+歌手 GD 搜索三要素匹配后取直链
           const gd = require('../services/gd');
           let uid = params.id || params.songmid;
           if (!uid && kw.length >= 2) {
-            const sd = await gd.gdRequest({ types: 'search', source: 'joox', name: kw, pagesize: '5' });
+            const sd = await gd.gdRequest({ types: 'search', source: 'joox', name: kw, pagesize: '10' });
             const recs = Array.isArray(sd) ? sd : (sd && sd.records) || [];
-            uid = recs[0] && (recs[0].url_id || recs[0].id);
+            const hit = matcher.findMatch(want, recs) || null;
+            uid = hit && (hit.url_id || hit.id);
           }
           if (uid) {
             const g = await gd.getSongUrl(String(uid), 'joox', br);
@@ -674,38 +680,80 @@ router.post('/play', async (req, res) => {
       return null;
     };
 
-    // force=true：只尝试指定源，不做跨源兜底；取不到完整版直接返回失败
+    // force=true：只尝试指定源，不做跨源兜底。命中即返回——即便仅试听片段也照播（标记 preview:true），
+    // 满足"切换源就要换这个源播放，无论试听"。
+    // 缺该源平台 ID 时，按 歌名+歌手+专辑 三要素搜索匹配后再取链（杜绝选中翻唱/翻版版本）。
     if (forceMode) {
       try {
         let urlRes = null;
-        if (source === 'netease' && id) {
-          urlRes = await neteaseUrl(id);
-        } else if (source === 'kuwo' && rid) {
-          const u = await kuwo.getPlayUrl(rid, 'mp3', '');
-          urlRes = u ? { url: u, source: 'kuwo', size: await probeUrlSize(u) } : null;
-        } else if (source === 'qq' && songmid) {
-          const u = await qq.getPlayUrl(songmid, br || 'standard');
-          urlRes = u && u.url ? { url: u.url, source: 'qq', br: u.br || '', size: await probeUrlSize(u.url) } : null;
-        } else if (source === 'kugou' && hash) {
-          const g = await kugou.getPlayUrlByHash(hash, albumId || '', { minDuration: 45 });
-          urlRes = g ? { url: g.url, source: 'kugou', durationSec: g.duration, br: g.br || '' } : null;
-        } else if (source === 'joox' && (id || songmid)) {
-          // GD-joox 聚合直链（平台内 url_id 取链）
+        if (source === 'netease') {
+          let nid = id;
+          if (!nid && kw.length >= 2) {
+            const rs = await netease.searchSong(kw, 10, 1);
+            const hit = matcher.findMatch(want, rs && rs.records) || null;
+            nid = hit && hit.id;
+          }
+          if (nid) urlRes = await neteaseUrl(nid);
+        } else if (source === 'kuwo') {
+          let r = rid;
+          if (!r && kw.length >= 2) {
+            const rs = await kuwo.search(kw, 0, 10);
+            const hit = matcher.findMatch(want, rs && rs.records) || null;
+            r = hit && (hit.rid || hit.id);
+          }
+          if (r) {
+            const u = await kuwo.getPlayUrl(r, 'mp3', '');
+            urlRes = u ? { url: u, source: 'kuwo', size: await probeUrlSize(u) } : null;
+          }
+        } else if (source === 'qq') {
+          let sm = songmid;
+          if (!sm && kw.length >= 2) {
+            const rs = await qq.search(kw, 20, 1);
+            const hit = matcher.findMatch(want, rs && rs.records) || null;
+            sm = hit && hit.songmid;
+          }
+          if (sm) {
+            const u = await qq.getPlayUrl(sm, br || 'standard');
+            urlRes = u && u.url ? { url: u.url, source: 'qq', br: u.br || '', size: await probeUrlSize(u.url) } : null;
+          }
+        } else if (source === 'kugou') {
+          let h = hash;
+          let aId = albumId || '';
+          if (!h && kw.length >= 2) {
+            const rs = await kugou.search(kw, 1, 10);
+            const r0 = matcher.findMatch(want, rs && rs.records) || null;
+            h = r0 && (r0.FileHash || r0.id || r0.hash);
+            aId = r0 && (r0.AlbumID || r0.albumId || '');
+          }
+          if (h) {
+            // 不回传 minDuration：仅能取到试听也照播（由前端标记 preview）
+            const g = await kugou.getPlayUrlByHash(h, aId || '', {});
+            urlRes = g ? { url: g.url, source: 'kugou', durationSec: g.duration, br: g.br || '' } : null;
+          }
+        } else if (source === 'joox') {
+          // GD-joox 聚合直链（平台内 url_id 取链）；跨平台歌曲缺 joox 平台 id 时按三要素搜索匹配
           const gd = require('../services/gd');
-          const g = await gd.getSongUrl(String(id || songmid), 'joox', br);
-          urlRes = g && g.url ? { url: g.url, source: 'joox', br: g.br || '', size: g.size || 0 } : null;
+          let uid = id || songmid;
+          if (!uid && kw.length >= 2) {
+            const sd = await gd.gdRequest({ types: 'search', source: 'joox', name: kw, pagesize: '10' });
+            const recs = Array.isArray(sd) ? sd : (sd && sd.records) || [];
+            const hit = matcher.findMatch(want, recs) || null;
+            uid = hit && (hit.url_id || hit.id);
+          }
+          if (uid) {
+            const g = await gd.getSongUrl(String(uid), 'joox', br);
+            urlRes = g && g.url ? { url: g.url, source: 'joox', br: g.br || '', size: g.size || 0 } : null;
+          }
         }
         if (urlRes && urlRes.url) {
           if ((urlRes.size || 0) < 0) {
             return res.json({ code: 500, msg: '该音源直链已失效（403/404），请切换其他音源' });
           }
-          if (isFragment(urlRes.url, urlRes.size || 0, urlRes.durationSec || 0, refSec)) {
-            return res.json({ code: 500, msg: '该音源仅有试听片段（不完整），请切换其他音源' });
-          }
-          return res.json({ code: 200, data: { url: urlRes.url, br: urlRes.br || '', source, duration: urlRes.durationSec || 0, preview: false }, msg: 'success' });
+          const pv = isFragment(urlRes.url, urlRes.size || 0, urlRes.durationSec || 0, refSec);
+          return res.json({ code: 200, data: { url: urlRes.url, br: urlRes.br || '', source, duration: urlRes.durationSec || 0, preview: pv }, msg: 'success' });
         }
       } catch (e) {}
-      return res.json({ code: 500, msg: '该音源无此歌曲' });
+      return res.json({ code: 500, msg: '该音源无此歌曲（或未找到三要素一致的版本）' });
     }
 
     const fallbackRef = { url: null }; // 兜底：仅试听可用时的最优候选
@@ -746,13 +794,14 @@ router.post('/play', async (req, res) => {
     // 2) 持网易云 id 时的空闲兜底
     if (id && source !== 'netease') { const r = await neteaseUrl(id); if (await accept(r, 'netease')) return; }
 
-    // 3) 按歌名+歌手跨源搜索兜底（kuwo → kugou → netease → GD-joox）
+    // 3) 按 歌名+歌手+专辑 三要素跨源搜索兜底（kuwo → kugou → netease → GD-joox）
+    // 每源先做三要素一致性筛选，无一致版本直接跳过该源，杜绝跨源兜底命中翻唱/翻版。
     if (kw.length >= 2) {
       const fallbacks = [
-        { src: 'kuwo', fn: async () => { const rs = await kuwo.search(kw, 0, 5); const r0 = rs && rs.records && rs.records[0]; if (!r0 || !r0.rid) return null; const u = await kuwo.getPlayUrl(r0.rid, 'mp3', ''); return u ? { url: u, source: 'kuwo', size: await probeUrlSize(u) } : null; } },
-        { src: 'kugou', fn: async () => { const rs = await kugou.search(kw, 1, 5); const r0 = rs && rs.records && rs.records[0]; const hh = r0 && (r0.FileHash || r0.id || r0.hash); if (!hh) return null; const g = await kugou.getPlayUrlByHash(hh, (r0 && (r0.AlbumID || r0.albumId)) || '', { minDuration: 45 }); return g ? { url: g.url, source: 'kugou', durationSec: g.duration, br: g.br || 0 } : null; } },
-        { src: 'netease', fn: async () => { const rs = await netease.searchSong(kw, 5, 1); const r0 = rs && rs.records && rs.records[0]; if (!r0 || !r0.id) return null; return neteaseUrl(r0.id); } },
-        { src: 'joox', fn: async () => { const gd = require('../services/gd'); const sd = await gd.gdRequest({ types: 'search', source: 'joox', name: kw, pagesize: '5' }); const recs = Array.isArray(sd) ? sd : (sd && sd.records) || []; for (const hit of recs.slice(0, 3)) { const uu = hit.url_id || hit.id; if (!uu) continue; const gg = await gd.getSongUrl(String(uu), 'joox', br); if (gg && gg.url) return { url: gg.url, source: 'joox', br: gg.br || '', size: gg.size || 0 }; } return null; } },
+        { src: 'kuwo', fn: async () => { const rs = await kuwo.search(kw, 0, 10); const hit = matcher.findMatch(want, rs && rs.records) || null; const rr = hit && (hit.rid || hit.id); if (!rr) return null; const u = await kuwo.getPlayUrl(rr, 'mp3', ''); return u ? { url: u, source: 'kuwo', size: await probeUrlSize(u) } : null; } },
+        { src: 'kugou', fn: async () => { const rs = await kugou.search(kw, 1, 10); const r0 = matcher.findMatch(want, rs && rs.records) || null; const hh = r0 && (r0.FileHash || r0.id || r0.hash); if (!hh) return null; const g = await kugou.getPlayUrlByHash(hh, (r0 && (r0.AlbumID || r0.albumId)) || '', { minDuration: 45 }); return g ? { url: g.url, source: 'kugou', durationSec: g.duration, br: g.br || 0 } : null; } },
+        { src: 'netease', fn: async () => { const rs = await netease.searchSong(kw, 10, 1); const r0 = matcher.findMatch(want, rs && rs.records) || null; if (!r0 || !r0.id) return null; return neteaseUrl(r0.id); } },
+        { src: 'joox', fn: async () => { const gd = require('../services/gd'); const sd = await gd.gdRequest({ types: 'search', source: 'joox', name: kw, pagesize: '10' }); const recs = Array.isArray(sd) ? sd : (sd && sd.records) || []; const hit = matcher.findMatch(want, recs) || null; const uu = hit && (hit.url_id || hit.id); if (!uu) return null; const gg = await gd.getSongUrl(String(uu), 'joox', br); return gg && gg.url ? { url: gg.url, source: 'joox', br: gg.br || '', size: gg.size || 0 } : null; } },
       ];
       for (const f of fallbacks) {
         try { const r = await f.fn(); if (await accept(r, r.source || f.src)) return; } catch (e) {}

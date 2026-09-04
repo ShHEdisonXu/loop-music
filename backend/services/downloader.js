@@ -10,6 +10,7 @@ const db = require('./db');
 const netease = require('./netease');
 const localLibrary = require('./localLibrary');
 const traffic = require('./traffic');
+const matcher = require('./matcher');
 
 // 并发队列
 let activeCount = 0;
@@ -127,24 +128,14 @@ async function assertNotPreview(tmpAudio) {
 // 网易云取链失败（无版权/VIP）时，按「歌名+歌手」到 Kuwo / GD-joox 等音源搜索取链兜底，
 // 让灰色/VIP 歌曲也能完整下载。成功仅替换直链，落盘目录结构与元数据逻辑保持原样。
 
-// 从搜索结果里挑与目标歌名/歌手最匹配的一条（全 0 分也返回首条避免空兜底）
+// 从搜索结果里挑与目标 歌名+歌手+专辑 三要素一致的记录。
+// 无一致版本返回 null（严禁退回首条，杜绝自动换源/兜底命中翻唱、翻版、Live/伴奏等错误版本）
 function pickBestMatch(records, task) {
-  if (!records || !records.length) return null;
-  const title = String(task.music_name || '').trim().toLowerCase();
-  const artist = String(task.artist_name || '').trim().toLowerCase();
-  let best = null;
-  let bestScore = -1;
-  for (const r of records) {
-    let score = 0;
-    const rn = String(r.musicName || '').trim().toLowerCase();
-    const ra = String(r.musicArtists || '').trim().toLowerCase();
-    if (title && rn === title) score += 3;
-    else if (title && rn.includes(title)) score += 1;
-    if (artist && ra === artist) score += 2;
-    else if (artist && ra.includes(artist)) score += 1;
-    if (score > bestScore) { bestScore = score; best = r; }
-  }
-  return best || records[0];
+  if (!Array.isArray(records) || !records.length) return null;
+  return matcher.findMatch(
+    { name: task.music_name, artist: task.artist_name, album: task.album_name },
+    records
+  );
 }
 
 // 匹配度评分（与 pickBestMatch 一致，用于候选排序）
@@ -167,6 +158,8 @@ function matchScore(task, musicName, musicArtists) {
 async function resolveFallbackSource(task, exclude = []) {
   const keyword = [task.music_name, task.artist_name].filter(Boolean).join(' ').trim() || task.music_name;
   if (!keyword) return [];
+  // 三要素匹配目标：仅采用 歌名+歌手+专辑 均一致的候选，拒绝翻唱/翻版/伴奏等
+  const want = { name: task.music_name, artist: task.artist_name, album: task.album_name };
   const brMap = { lossless: '320kmp3', higher: '320kmp3', exhigh: '320kmp3', standard: '128kmp3' };
   const hits = [];
 
@@ -176,6 +169,7 @@ async function resolveFallbackSource(task, exclude = []) {
       const kuwo = require('./kuwo');
       const r = await kuwo.search(keyword, 0, 20);
       const recs = (r.records || [])
+        .filter((x) => matcher.trackMatch(want, x))
         .map((x) => ({ ...x, _s: matchScore(task, x.musicName, x.musicArtists) }))
         .sort((a, b) => b._s - a._s)
         .slice(0, 5);
@@ -195,6 +189,7 @@ async function resolveFallbackSource(task, exclude = []) {
       const kugou = require('./kugou');
       const r = await kugou.search(keyword, 1, 20);
       const recs = (r.records || [])
+        .filter((x) => matcher.trackMatch(want, x))
         .map((x) => ({ ...x, _s: matchScore(task, x.musicName, x.musicArtists) }))
         .sort((a, b) => b._s - a._s)
         .slice(0, 3);
@@ -213,9 +208,16 @@ async function resolveFallbackSource(task, exclude = []) {
   if (!exclude.includes('joox')) {
     try {
       const gd = require('./gd');
-      const sd = await gd.gdRequest({ types: 'search', source: 'joox', name: keyword, pagesize: '5' });
+      const sd = await gd.gdRequest({ types: 'search', source: 'joox', name: keyword, pagesize: '10' });
       const recs = (Array.isArray(sd) ? sd : (sd && sd.records) || [])
-        .map((x) => ({ ...x, _s: matchScore(task, x.name || x.musicName, Array.isArray(x.artist) ? x.artist.join('/') : (x.artist || x.musicArtists || '')) }))
+        .map((x) => ({
+          ...x,
+          musicName: x.name || x.musicName || '',
+          musicArtists: Array.isArray(x.artist) ? x.artist.join('/') : (x.artist || x.musicArtists || ''),
+          musicAlbum: x.album || x.albumName || x.musicAlbum || ''
+        }))
+        .filter((x) => matcher.trackMatch(want, x))
+        .map((x) => ({ ...x, _s: matchScore(task, x.musicName, x.musicArtists) }))
         .sort((a, b) => b._s - a._s)
         .slice(0, 3);
       for (const hit of recs) {
@@ -594,13 +596,18 @@ async function autoSwitchToJoox(taskId, task) {
     const keyword = [task.music_name, task.artist_name].filter(Boolean).join(' ').trim();
     if (!keyword) return false;
     const gd = require('./gd');
-    const sd = await gd.gdRequest({ types: 'search', source: 'joox', name: keyword, pagesize: '5' });
+    const sd = await gd.gdRequest({ types: 'search', source: 'joox', name: keyword, pagesize: '10' });
     const recs = (Array.isArray(sd) ? sd : (sd && sd.records) || []).map((x) => ({
       ...x,
       musicName: x.name || x.musicName || '',
-      musicArtists: Array.isArray(x.artist) ? x.artist.join('/') : (x.artist || x.musicArtists || '')
+      musicArtists: Array.isArray(x.artist) ? x.artist.join('/') : (x.artist || x.musicArtists || ''),
+      musicAlbum: x.album || x.albumName || x.musicAlbum || ''
     }));
     const rec = pickBestMatch(recs, task);
+    if (!rec) {
+      console.log(`[auto-joox] 任务 ${taskId}「${task.music_name}」未找到三要素一致（歌名/歌手/专辑）的 JOOX 版本，放弃自动切源`);
+      return false;
+    }
     const uid = rec && (rec.url_id || rec.id);
     if (!uid) return false;
     db.prepare("UPDATE download_task SET gd = 1, plug_name = 'joox', source_platform = 'joox', url_id = ?, song_id = ?, pic_id = COALESCE(?, pic_id) WHERE id = ?")

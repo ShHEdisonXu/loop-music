@@ -65,6 +65,10 @@ docker compose up -d
 - 网易云（双网关热备 /cloudsearch）
 - GD 音乐台聚合源（joox 子源）
 
+## 致谢
+
+本项目接入的聚合音源能力来自 [GD 音乐台（GD Music）](https://t.me/gdstudio_music) 提供的开放 API（`music.gdstudio.org/api.php`），在此对 GD 音乐台的开发与维护表示诚挚感谢。详细声明见 [CREDITS.md](CREDITS.md)。
+
 ## 本地构建/开发
 
 ```bash

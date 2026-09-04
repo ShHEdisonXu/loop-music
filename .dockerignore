@@ -7,8 +7,14 @@ backend/ncm_cookie.txt
 backend/settings.json
 backend/*.tgz
 backend/*.log
+backend/*.bak*
+backend/health-guard.sh
 backend/.health
 backend/Dockerfile*
+backend/music.js
+backend/tidal.js
+backend/routes/enrich.js
+backend/.music.fetch.js
 **/._*
 .DS_Store
 .git

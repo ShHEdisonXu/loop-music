@@ -15,3 +15,9 @@ backend/.health
 *.log
 *.tgz
 .DS_Store
+
+# 历史重复/死代码副本（勿再提交）
+backend/music.js
+backend/tidal.js
+backend/routes/enrich.js
+backend/.music.fetch.js

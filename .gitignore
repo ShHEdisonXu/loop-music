@@ -8,6 +8,8 @@ backend/config.js.bak.*
 backend/ncm_cookie.txt
 backend/settings.json
 backend/.health
+**/*.bak
+**/*.bak.*
 
 # misc
 *.log

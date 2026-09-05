@@ -30,15 +30,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ---- 可选：同时发布 Docker Hub ----
-      # 在仓库 Settings -> Secrets and variables -> Actions 配置：
-      #   DOCKERHUB_USERNAME、DOCKERHUB_TOKEN 后取消下面注释，
-      # 并把 metadata 的 images 追加一行 <你的用户名>/loop-app
-      # - name: Login to Docker Hub
-      #   uses: docker/login-action@v3
-      #   with:
-      #     username: ${{ secrets.DOCKERHUB_USERNAME }}
-      #     password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
@@ -46,6 +42,7 @@ jobs:
         with:
           images: |
             ghcr.io/${{ github.repository }}
+            edisonxu123/loop-music
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}

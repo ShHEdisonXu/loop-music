@@ -2,8 +2,8 @@ services:
   loop-app:
     # 公开镜像地址（二选一，按拉取速度取舍）：
     #   ghcr.io/shhedisonxu/loop-music   ← 海外/直连快
-    #   shhedisonxu/loop-music           ← Docker Hub，国产 NAS 更稳（需另行发布）
-    image: ghcr.io/shhedisonxu/loop-music
+    #   edisonxu123/loop-music           ← Docker Hub，国产 NAS 更稳（CI 已双发）
+    image: edisonxu123/loop-music
     container_name: loop-app
     restart: unless-stopped
     ports:

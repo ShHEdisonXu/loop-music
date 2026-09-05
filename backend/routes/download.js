@@ -35,7 +35,7 @@ router.post('/downloadSong', (req, res) => {
     } else if (result.status === 'duplicate') {
       res.json({ code: 200, msg: '歌曲已下载过，跳过', data: { duplicate: true, filePath: result.filePath } });
     } else if (result.status === 'pending') {
-      res.json({ code: 200, msg: '本地已存在相同歌曲（元数据匹配），已移至待处理栏', data: { pending: true, pendingId: result.pendingId, matchedFile: result.matchedFile } });
+      res.json({ code: 200, msg: '本地已有该歌曲，已移至待处理栏，请确认保留本地或替换', data: { pending: true, pendingId: result.pendingId, matchedFile: result.matchedFile } });
     } else {
       res.json({ code: 200, msg: '已加入下载队列', data: { taskId: result.taskId } });
     }

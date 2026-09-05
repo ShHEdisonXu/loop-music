@@ -367,10 +367,9 @@ function mnorm (s) { return String(s || '').replace(/[\s·・.．,，、/()（�
 router.post('/meta/match', async (req, res) => {
   try {
     const { id, combos, song } = req.body || {};
-    // 兼容两种调用方字段：MetaTable 传 song.name，播放器刮削传 song.title
-    const title = (song && (song.name || song.title)) || '';
-    const artist = (song && (song.artist || song.artistName)) || '';
-    const album = (song && (song.album || song.albumName)) || '';
+    const title = (song && song.name) || '';
+    const artist = (song && song.artist) || '';
+    const album = (song && song.album) || '';
     if (!id || !title) return res.json({ code: 500, msg: '缺少歌曲信息' });
 
     // 多线路聚合搜索：按 歌名|歌手 去重，netease 主源在前，其余源补足候选
@@ -540,8 +539,8 @@ router.get('/meta/cover', async (req, res) => {
   try {
     const out = await localLibrary.extractCoverById(id);
     if (!out) return res.status(404).json({ code: 404, msg: '该文件无内嵌封面' });
-    // 封面 1 小时强缓存：列表页上百首封面翻页/重开直接走浏览器缓存，不再反复读盘解析（no-cache 曾是手机端大批 499 卡顿根因）
-    res.set('Cache-Control', 'public, max-age=3600');
+    // 元数据修改后封面需即时生效：禁止强缓存（no-cache = 每次回源校验，重新提取内嵌封面）
+    res.set('Cache-Control', 'no-cache');
     res.set('Content-Type', out.type);
     return res.send(out.buffer);
   } catch (e) {

@@ -887,12 +887,7 @@ function extractCoverById (id) {
 
 // 批量本地是否存在匹配（今日推荐/搜索/歌单/专辑本地标注用）：
 // 与入参逐条对齐，未命中返回 null；命中返回 { exists,filePath,fileSize,format,... }
-// 本地匹配表内存缓存（60s TTL）：原实现每次调用都全表扫 1.3 万行，前端秒级并发多次直接拖垮响应（手机端 499 卡顿根因）
-const MATCH_CACHE_TTL = 60 * 1000;
-let _matchCache = { at: 0, strict: null, relaxed: null };
-function getMatchMaps () {
-  const now = Date.now();
-  if (_matchCache.strict && now - _matchCache.at < MATCH_CACHE_TTL) return _matchCache;
+function matchLocalExists(tracks = []) {
   const rows = db.prepare('SELECT * FROM local_track').all();
   const strict = new Map();
   const relaxed = new Map();
@@ -902,12 +897,6 @@ function getMatchMaps () {
     const k2 = (r.norm_title || normalize(r.title || '')) + '\u0001' + normalize(r.artist || '');
     if (!relaxed.has(k2)) relaxed.set(k2, r);
   }
-  _matchCache = { at: now, strict, relaxed, count: rows.length };
-  return _matchCache;
-}
-
-function matchLocalExists(tracks = []) {
-  const { strict, relaxed } = getMatchMaps();
   return (tracks || []).map((t) => {
     const title = t && (t.title || t.musicName);
     const artist = t && (t.artist || t.musicArtists || t.artistName);

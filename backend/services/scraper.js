@@ -1,12 +1,13 @@
 // 刮削（元数据补全）服务：从多平台数据源搜索补全 歌手/专辑/歌词/封面
 // 数据源接入方式参考 FnMusicEnhance / musicdl / Lyrico：
-//   网易云 / 酷狗 / 酷我 走本地 download-service 既有搜索适配（services/netease|kugou|kuwo）
+//   网易云 / QQ / 酷狗 / 酷我 走本地 download-service 既有搜索适配（services/netease|qq|kugou|kuwo）
 //   GD Tidal / JOOX（Apple 系）走 GD 聚合网关 search/lyric/pic
 // 刮削产出：写同名 .lrc 歌词文件 + 更新 local_track 的 artist/album 元数据
 const fs = require('fs');
 const path = require('path');
 const db = require('./db');
 const netease = require('./netease');
+const qq = require('./qq');
 const kugou = require('./kugou');
 const kuwo = require('./kuwo');
 const gd = require('./gd');
@@ -14,6 +15,7 @@ const gd = require('./gd');
 // 数据源清单（前端刮削页数据源选择器）
 const SOURCES = [
   { id: 'netease', name: '网易云音乐', caps: ['artist', 'album', 'lyric', 'pic'] },
+  { id: 'qq', name: 'QQ音乐', caps: ['artist', 'album', 'pic'] },
   { id: 'kugou', name: '酷狗音乐', caps: ['artist', 'album'] },
   { id: 'kuwo', name: '酷我音乐', caps: ['artist', 'album', 'pic'] },
   { id: 'tidal', name: 'GD Tidal（Apple 系）', caps: ['artist', 'album', 'lyric', 'pic'] },
@@ -68,6 +70,17 @@ async function search(source, keyword, type = 'song') {
       }));
       return { records };
     }
+    case 'qq': {
+      const r = await qq.search(kw, 1, 10);
+      const records = (r.records || []).map(s => ({
+        id: String(s.id || s.songmid || ''),
+        name: s.musicName || '',
+        artist: s.musicArtists || '',
+        album: s.musicAlbum || '',
+        pic: s.musicImage || ''
+      }));
+      return { records };
+    }
     case 'kugou': {
       const r = await kugou.search(kw, 1, 10);
       const records = (r.records || []).map(s => ({
@@ -94,14 +107,21 @@ async function search(source, keyword, type = 'song') {
     case 'joox': {
       const data = await gd.gdRequest({ types: 'search', source, name: kw, count: 20, pages: 1 });
       const arr = Array.isArray(data) ? data : [];
-      // 封面直链可选：仅补首条，避免 20 条结果逐条 spawn 子进程签名（execFileSync 阻塞事件循环）导致搜索接口超时
-      try {
-        const first = arr[0];
-        if (first && first.pic_id) {
-          const u = await gd.getPic(first.pic_id);
-          if (u) first.pic = u;
+      // 批量补封面直链（pic_id -> pic，限并发避免触发上游限流）
+      const PIC_CONCURRENCY = 4;
+      let idx = 0;
+      async function worker() {
+        while (idx < arr.length) {
+          const i = idx++;
+          const item = arr[i];
+          if (!item || !item.pic_id) continue;
+          try {
+            const url = await gd.getPic(item.pic_id);
+            if (url) item.pic = url;
+          } catch (e) { /* 单条失败不影响整体 */ }
         }
-      } catch (e) { /* 单条失败不影响整体 */ }
+      }
+      await Promise.all(Array.from({ length: Math.min(PIC_CONCURRENCY, arr.length) }, worker));
       const records = arr.map(s => ({
         id: String(s.id != null ? s.id : s.musicrid || ''),
         name: s.name || s.musicName || s.songName || '',

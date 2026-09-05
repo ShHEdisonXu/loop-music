@@ -6,8 +6,24 @@ module.exports = {
   // 服务监听端口
   port: process.env.PORT || 3001,
 
-  // api-enhanced 网易云后端地址
-  ncmApiBase: process.env.NCM_API_BASE || 'http://127.0.0.1:3000',
+  // api-enhanced 网易云后端地址（单值，兼容旧逻辑：取多网关中的第一个）
+  ncmApiBase: (process.env.NCM_API_BASE || 'http://127.0.0.1:3000').split(/[,;]/)[0].trim(),
+
+  // 网易云多网关列表：NCM_API_BASE 支持逗号/分号分隔多个网关地址，
+  // 亦可追加配置在 settings.json 的 ncmApiBases（数组或逗号分隔字符串）中，两者合并去重。
+  // 请求遇网络错误/5xx/429 时自动切换到下一网关重试（多网关 failover，抗上游 502 风控抖动）
+  get ncmApiBases() {
+    const fromEnv = (process.env.NCM_API_BASE || 'http://127.0.0.1:3000')
+      .split(/[,;]/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    const extra = settings.get('ncmApiBases') || [];
+    const extraArr = Array.isArray(extra)
+      ? extra
+      : String(extra).split(/[,;]/).map(s => s.trim()).filter(Boolean);
+    const merged = fromEnv.concat(extraArr).filter((v, i, a) => a.indexOf(v) === i);
+    return merged.length ? merged : fromEnv;
+  },
 
   // 音乐下载根目录（与 sqmusic 一致：/vol4/1000/Music/歌手/专辑/）
   // 支持运行时在「设置」页修改：settings.json 中 musicRoot 优先，其次环境变量，最后默认值

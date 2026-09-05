@@ -4,15 +4,6 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 
-// ===== 网易云网关地址解析（多网关兼容）=====
-// config 仅暴露单数 ncmApiBase（或经环境变量 NCM_API_BASE）时，退化为单网关数组；
-// 支持逗号分隔多网关，与升级版多网关 failover 逻辑对齐。
-const NCM_BASES = (() => {
-  if (Array.isArray(config.ncmApiBases) && config.ncmApiBases.length) return config.ncmApiBases;
-  const v = config.ncmApiBase || process.env.NCM_API_BASE || '';
-  return v ? String(v).split(',').map(s => s.trim()).filter(Boolean) : [];
-})();
-
 // ===== 登录态持久化（cookie 落盘，重启自动恢复）=====
 // data 目录已挂载到 NAS 持久卷（/vol4/1000/download-service/data），重启容器不丢失
 const COOKIE_FILE = path.join(__dirname, '..', 'data', 'ncm_cookie.txt');
@@ -97,7 +88,7 @@ let refreshFailLogged = false;    // 刷新失败日志去重
 // 调用 /login/refresh 刷新并重新落盘（裸 axios 直连，不经 client 拦截器避免自触发）
 async function refreshNcmCookie() {
   try {
-    const resp = await axios.get(NCM_BASES[0] + '/login/refresh', {
+    const resp = await axios.get(config.ncmApiBases[0] + '/login/refresh', {
       params: { timestamp: Date.now() },
       timeout: 30000,
       headers: Object.assign(
@@ -193,7 +184,7 @@ async function requestWithFailover(method, url, cfg = {}) {
   const params = Object.assign({}, cfg.params || {});
   if (!('timestamp' in params)) params.timestamp = Date.now();
   const baseCfg = Object.assign({}, cfg, { method, url, params });
-  const bases = NCM_BASES;
+  const bases = config.ncmApiBases;
   const retriesPerGateway = 2;                 // 每网关最多尝试次数
   const backoffMs = [300, 800];                // 网关内退避（两次重试）
   const switchDelay = [150, 300];              // 跨网关切换等待（指数+抖动）
@@ -852,7 +843,7 @@ async function createQrCode(key) {
 // 若直接落盘会导致 loginStatus 恒为 loggedIn:false、扫码"成功"却登不上。故落盘前先验证。
 async function verifyQrCookieValid(cookie) {
   try {
-    const resp = await axios.get(NCM_BASES[0] + '/login/status', {
+    const resp = await axios.get(config.ncmApiBases[0] + '/login/status', {
       params: { timestamp: Date.now() },
       timeout: 15000,
       headers: Object.assign(

@@ -174,101 +174,6 @@ async function mbSuggest(title, artist) {
   return { ok: true, mbId: first.id, fields };
 }
 
-// ===== 在线匹配（元数据匹配修改页 · 对比卡片）=====
-// 按用户勾选的「匹配范围组合」逐组联网搜索候选，输出带封面/专辑详情的列表；
-// MusicBrainz（genre/language）与组合无关，只补一次挂到结果。
-const MATCH_COMBOS = ['title', 'title_artist', 'title_artist_album'];
-const matchLabel = (c) =>
-  c === 'title_artist_album' ? '歌名 + 歌手 + 专辑' :
-  c === 'title_artist' ? '歌名 + 歌手' : '仅歌名';
-
-// 候选评分排序（与 ncmSuggest 同口径）：标题全等 > 副标剥一致；歌手一致加分
-function scoreRecords(records, title, artist) {
-  const wantTitle = normalize(title || '');
-  const wantArtist = normalize(artist || '');
-  return records
-    .map(r => {
-      const rT = normalize(r.musicName || '');
-      const rA = normalize(r.musicArtists || '');
-      let score = 0;
-      if (rT && wantTitle && rT === wantTitle) score += 10;
-      else if (titleBase(rT) && titleBase(rT) === titleBase(title) && rT !== wantTitle) score += 6;
-      if (wantArtist) {
-        if (rA === wantArtist) score += 4;
-        else if (rA && rA.includes(wantArtist)) score += 3;
-      } else {
-        score += 2;
-      }
-      return { r, score };
-    })
-    .filter(x => x.score >= 6)
-    .sort((a, b) => b.score - a.score)
-    .map(x => x.r);
-}
-
-// row: rowToTrack 输出；combos: 匹配范围组合子集
-async function matchByCombos(row, combos = ['title_artist']) {
-  const title = (row && (row.musicName || row.title)) || '';
-  const artist = (row && (row.artistName || row.artist)) || '';
-  const album = (row && (row.albumName || row.album)) || '';
-  const want = combos.filter(c => MATCH_COMBOS.includes(c));
-  const kwOf = (c) => {
-    if (c === 'title_artist_album') return album ? `${title} ${artist} ${album}` : `${title} ${artist}`;
-    if (c === 'title_artist') return artist ? `${title} ${artist}` : title;
-    return title;
-  };
-
-  const groups = [];
-  for (const c of want) {
-    let records = [];
-    try {
-      const resp = await netease.searchSong(kwOf(c).trim() || title, 20, 1);
-      records = (resp && resp.records) || [];
-    } catch (e) {
-      console.warn('[enrich] match 搜索失败(' + c + '): ' + e.message);
-      records = [];
-    }
-    const top = scoreRecords(records, title, artist).slice(0, 6);
-    const items = await Promise.all(top.map(async (s) => {
-      const it = {
-        musicName: s.musicName || '',
-        artistName: s.musicArtists || '',
-        albumName: s.musicAlbum || '',
-        cover: s.musicImage || '',
-        albumArtist: '',
-        year: '',
-        track: ''
-      };
-      if (s.albumid) {
-        try {
-          const ad = await netease.getAlbumDetail(s.albumid);
-          if (ad) {
-            it.albumArtist = ad.albumSinger || '';
-            if (ad.albumTime && /^\d{4}$/.test(ad.albumTime)) it.year = ad.albumTime;
-            const cur = (ad.musics || []).find(m => String(m.id) === String(s.id));
-            if (cur && cur.trackNo) it.track = String(cur.trackNo);
-          }
-        } catch (e) { /* 专辑详情失败不阻塞候选 */ }
-      }
-      return it;
-    }));
-    if (items.length) {
-      groups.push({ key: c, label: matchLabel(c), keyword: kwOf(c).trim(), candidates: items });
-    }
-  }
-
-  // MusicBrainz 补 genre/language（一次）
-  let mbFields = [];
-  try {
-    const mb = await mbSuggest(title, artist);
-    if (mb && mb.ok) mbFields = mb.fields;
-  } catch (e) { /* MB 失败不阻塞 */ }
-  const mbExtra = {};
-  for (const f of mbFields) { if (f && f.name) mbExtra[f.name] = f.value || ''; }
-
-  return { combos: groups, mb: mbExtra };
-}
-
 // ===== 单条合成建议 =====
 // row 为 rowToTrack 输出（含 musicName/artistName/albumName/year/...）
 async function suggestOne(row) {
@@ -374,6 +279,5 @@ module.exports = {
   batchPreview,
   listCandidates,
   ncmSuggest,
-  mbSuggest,
-  matchByCombos
+  mbSuggest
 };

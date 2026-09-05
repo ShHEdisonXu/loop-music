@@ -63,7 +63,8 @@ router.get('/stats', (req, res) => {
     const success = db.prepare("SELECT COUNT(*) as c FROM download_task WHERE download_status IN ('success','supplement_success')").get().c;
     const waiting = db.prepare("SELECT COUNT(*) as c FROM download_task WHERE download_status IN ('waiting','loading','supplement')").get().c;
     const error = db.prepare("SELECT COUNT(*) as c FROM download_task WHERE download_status = 'error'").get().c;
-    const downloading = db.prepare("SELECT COUNT(*) as c FROM download_task WHERE download_status = 'loading'").get().c;
+    // 角标口径：等待中+下载中均计入（loading 窗口短，仅统计 loading 角标几乎不亮）
+    const downloading = db.prepare("SELECT COUNT(*) as c FROM download_task WHERE download_status IN ('waiting','loading')").get().c;
     let totalSpace = 0;
     try {
       totalSpace = db.prepare("SELECT COALESCE(SUM(file_size),0) as s FROM download_task WHERE download_status IN ('success','supplement_success')").get().s || 0;

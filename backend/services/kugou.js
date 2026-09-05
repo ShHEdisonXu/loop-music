@@ -61,6 +61,23 @@ function genMid() {
   return Array.from({ length: 16 }, () => Math.floor(Math.random() * 10)).join('');
 }
 
+// 清洗歌曲名/歌手名：去掉搜索接口返回的 <em> 高亮标签、HTML 实体与不可见控制字符，
+// 并统一 trim 收尾（修复酷狗歌名/歌手名前后乱码、格式字符残留）
+function cleanName(s) {
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(/<[^>]*>/g, '')            // 去 <em>/<i> 等 HTML 标签
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')  // 去控制字符
+    .replace(/\u200b|\u200e|\u200f|\ufeff/g, '')                     // 去零宽/不可见字符
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // 搜索歌曲（返回 sqmusic records 格式，附带酷狗取链所需 FileHash / AlbumID / Duration）
 async function search(keyword, page = 1, size = 20) {
   const res = await retry(() => http.get('https://songsearch.kugou.com/song_search_v2', {
@@ -76,9 +93,9 @@ async function search(keyword, page = 1, size = 20) {
     HQFileHash: s.HQFileHash || '',
     SQFileHash: s.SQFileHash || '',
     AlbumID: s.AlbumID || s.album_id || '',
-    musicName: s.SongName || s.songname || '',
-    musicArtists: (s.SingerName || s.singer_name || '').replace(/,/g, '/'),
-    musicAlbum: s.AlbumName || s.album_name || '',
+    musicName: cleanName(s.SongName || s.songname || ''),
+    musicArtists: cleanName((s.SingerName || s.singer_name || '').replace(/,/g, '/')),
+    musicAlbum: cleanName(s.AlbumName || s.album_name || ''),
     musicImage: '',
     musicDuration: (parseInt(s.Duration || '0', 10) || 0) * 1000,
     bits: ['standard'],

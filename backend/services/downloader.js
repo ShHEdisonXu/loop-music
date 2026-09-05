@@ -16,25 +16,6 @@ const matcher = require('./matcher');
 let activeCount = 0;
 const queue = [];
 
-// 任务级下载进度缓存：taskId -> { received, total, speed }
-// 供 /task/list（loading 任务附加 progress）与 /task/stats（globalSpeed）读取；
-// 任务进入终态后由 success / 失败出口清理，避免内存残留。
-const progressMap = new Map();
-
-// 读取单任务实时进度（无记录返回 undefined，路由层兜底为零值）
-function getProgress(taskId) {
-  return progressMap.get(taskId);
-}
-
-// 全局实时速率：对当前所有下载中任务的瞬时速率求和（字节/秒）
-function getGlobalSpeed() {
-  let sum = 0;
-  for (const p of progressMap.values()) {
-    if (p && Number.isFinite(p.speed)) sum += p.speed;
-  }
-  return Math.round(sum);
-}
-
 // 清理文件名中的非法字符
 function sanitize(name) {
   return String(name || '未知')
@@ -79,13 +60,12 @@ function hasExistingTask(songId) {
 function createTask(song, source = 'search') {
   const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
   const isGd = song.gd ? 1 : 0;
-  const plugName = song.plugName || 'netease';
   const info = db.prepare(`
     INSERT INTO download_task (song_id, music_name, artist_name, album_name, plug_name, br_type, audio_book, download_status, download_time, download_update_time, source, gd, url_id, lyric_id, pic_id, source_platform, external, backend_base, backend_protocol)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     song.id, song.musicName, song.artistName, song.albumName,
-    plugName, song.brType || config.defaultBrType,
+    song.plugName || 'netease', song.brType || config.defaultBrType,
     song.audioBook ? 1 : 0, now, now, source,
     isGd, song.url_id || '', song.lyric_id || '', song.pic_id || '', song.sourcePlatform || song.source_platform || '',
     song.external ? 1 : 0, song.backendBase || '', song.backendProtocol || ''
@@ -101,29 +81,14 @@ function updateTask(id, status, msg = '', filePath = null) {
   `).run(status, msg, now, filePath, id);
 }
 
-// 下载文件（流式，带断流保护）；taskId 传入时实时上报任务级进度到 progressMap
-async function downloadFile(url, destPath, taskId = null) {
+// 下载文件（流式，带断流保护）
+async function downloadFile(url, destPath) {
   const resp = await axios.get(url, { responseType: 'stream', timeout: 90000, maxRedirects: 5 });
   const total = parseInt(resp.headers['content-length'] || '0', 10);
   const writer = fs.createWriteStream(destPath);
   return new Promise((resolve, reject) => {
     let written = 0;
-    let lastSize = 0;
-    let lastTick = Date.now();
-    resp.data.on('data', (c) => {
-      written += c.length;
-      traffic.recordDownload(c.length);
-      if (taskId != null) {
-        const now = Date.now();
-        const dt = now - lastTick;
-        let speed = 0;
-        if (dt > 0) speed = Math.round(((written - lastSize) * 1000) / dt);
-        lastSize = written;
-        lastTick = now;
-        const prev = progressMap.get(taskId) || {};
-        progressMap.set(taskId, { received: written, total, speed: speed || prev.speed || 0 });
-      }
-    });
+    resp.data.on('data', (c) => { written += c.length; traffic.recordDownload(c.length); });
     resp.data.pipe(writer);
     writer.on('finish', () => {
       // 断流保护：声明了 Content-Length 但未写满，判定下载不完整
@@ -479,8 +444,7 @@ async function doDownload(taskId) {
           : '下载音频中');
       try {
         try { fs.unlinkSync(tmpAudio); } catch (_) {}
-        progressMap.set(taskId, { received: 0, total: 0, speed: 0 });
-        await downloadFile(cand.url, tmpAudio, taskId);
+        await downloadFile(cand.url, tmpAudio);
         await assertNotPreview(tmpAudio);
         done = true;
         urlInfo = cand;
@@ -588,7 +552,6 @@ async function doDownload(taskId) {
     localLibrary.recordDownloaded(song, filePath);
 
     updateTask(taskId, 'success', '下载完成', filePath);
-    progressMap.delete(taskId);
   } catch (e) {
     console.error(`任务 ${taskId} 下载失败:`, e.message);
     // 清理下载过程中产生的临时文件（含试听/不完整文件），防止坏文件残留
@@ -697,16 +660,17 @@ async function failTask(taskId, task, msg) {
     if (ok) return;
   } catch (_) {}
   updateTask(taskId, 'error', msg);
-  progressMap.delete(taskId);
 }
 
 // 入队下载（去重：song_id 已成功 → 已存在未完成任务 → 本地元数据识别 → 路径二次）
 function enqueueDownload(song, source = 'search') {
   const br = song.brType || config.defaultBrType;
-  // ① song_id + 音质 精确去重（已成功下载）
+  // ① song_id + 音质 已成功下载 → 不直接跳过，改入待处理栏，
+  //    由用户确认「保留本地 或 替换本地」（替换低质量→高质量场景）
   const existing = isDownloaded(song.id, br);
   if (existing) {
-    return { status: 'duplicate', filePath: existing };
+    const pendingId = localLibrary.addPending(song, br, existing, source);
+    return { status: 'pending', pendingId, matchedFile: existing };
   }
   // ② 同曲目已有未完成任务（waiting/loading/supplement/error）→ 不再重复创建。
   // 修复：重试/换源后卡 waiting 的历史场景，搜索页重复点击同一首会产生第二条记录。
@@ -795,15 +759,24 @@ function msgToCn(msg) {
   return s;
 }
 
+// 全局实时下载速度（字节/秒），供 /api/task/stats globalSpeed 使用
+function getGlobalSpeed() {
+  try {
+    const snap = traffic.getSnapshot();
+    return Number(snap.downloadSpeed) || 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
 module.exports = {
   enqueueDownload,
   enqueueBatch,
   forceEnqueue,
   isDownloaded,
+  getGlobalSpeed,
   resetRetry,
   clearProgress,
-  getProgress,
-  getGlobalSpeed,
   msgToCn,
   createTask,
   updateTask,

@@ -1,3 +1,4 @@
+// SQLite 存储：下载任务 + 歌单监控（使用 Node 内置 node:sqlite，无需原生编译）
 const { DatabaseSync } = require('node:sqlite');
 const path = require('path');
 const fs = require('fs');
@@ -94,22 +95,7 @@ CREATE TABLE IF NOT EXISTS local_track (
   artist TEXT,
   album TEXT,
   album_artist TEXT,
-  year TEXT DEFAULT '',
-  track TEXT DEFAULT '',
-  disc TEXT DEFAULT '',
-  genre TEXT DEFAULT '',
-  language TEXT DEFAULT '',
-  composer TEXT DEFAULT '',
-  lyricist TEXT DEFAULT '',
-  comment TEXT DEFAULT '',
-  bpm TEXT DEFAULT '',
   duration REAL DEFAULT 0,
-  file_size INTEGER DEFAULT 0,
-  bit_rate INTEGER DEFAULT 0,
-  sample_rate INTEGER DEFAULT 0,
-  channels INTEGER DEFAULT 0,
-  bits_per_sample INTEGER DEFAULT 0,
-  format TEXT DEFAULT '',
   norm_title TEXT,
   norm_artist TEXT,
   norm_album TEXT,
@@ -119,39 +105,6 @@ CREATE TABLE IF NOT EXISTS local_track (
 CREATE INDEX IF NOT EXISTS idx_local_fp ON local_track(fingerprint);
 CREATE INDEX IF NOT EXISTS idx_local_title_artist ON local_track(norm_title, norm_artist);
 `);
-
-// local_track 扩展标签列迁移（旧库缺列则 ALTER 增加：年份/音轨/风格/语言/文件大小）
-(function migrateLocalTrackTags() {
-  try {
-    const cols = db.prepare('PRAGMA table_info(local_track)').all().map(c => c.name);
-    const adds = [
-      ['year', "TEXT DEFAULT ''"],
-      ['track', "TEXT DEFAULT ''"],
-      ['genre', "TEXT DEFAULT ''"],
-      ['language', "TEXT DEFAULT ''"],
-      ['file_size', "INTEGER DEFAULT 0"],
-      ['disc', "TEXT DEFAULT ''"],
-      ['composer', "TEXT DEFAULT ''"],
-      ['lyricist', "TEXT DEFAULT ''"],
-      ['comment', "TEXT DEFAULT ''"],
-      ['bpm', "TEXT DEFAULT ''"],
-      ['bit_rate', "INTEGER DEFAULT 0"],
-      ['sample_rate', "INTEGER DEFAULT 0"],
-      ['channels', "INTEGER DEFAULT 0"],
-      ['bits_per_sample', "INTEGER DEFAULT 0"],
-      ['format', "TEXT DEFAULT ''"],
-      ['cover_url', "TEXT DEFAULT ''"]
-    ];
-    for (const [name, def] of adds) {
-      if (!cols.includes(name)) {
-        db.exec(`ALTER TABLE local_track ADD COLUMN ${name} ${def}`);
-        console.log(`[db] local_track 增加列: ${name}`);
-      }
-    }
-  } catch (e) {
-    console.warn('[db] local_track 标签迁移失败：' + e.message);
-  }
-})();
 
 // 待处理重复项表（元数据识别命中，等待用户决定）
 // 记录「本地已有文件」与「待下载文件」双方对比信息

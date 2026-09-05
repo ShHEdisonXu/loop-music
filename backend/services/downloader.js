@@ -60,12 +60,13 @@ function hasExistingTask(songId) {
 function createTask(song, source = 'search') {
   const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
   const isGd = song.gd ? 1 : 0;
+  const plugName = song.plugName || 'netease';
   const info = db.prepare(`
     INSERT INTO download_task (song_id, music_name, artist_name, album_name, plug_name, br_type, audio_book, download_status, download_time, download_update_time, source, gd, url_id, lyric_id, pic_id, source_platform, external, backend_base, backend_protocol)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     song.id, song.musicName, song.artistName, song.albumName,
-    song.plugName || 'netease', song.brType || config.defaultBrType,
+    plugName, song.brType || config.defaultBrType,
     song.audioBook ? 1 : 0, now, now, source,
     isGd, song.url_id || '', song.lyric_id || '', song.pic_id || '', song.sourcePlatform || song.source_platform || '',
     song.external ? 1 : 0, song.backendBase || '', song.backendProtocol || ''

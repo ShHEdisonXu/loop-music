@@ -9,9 +9,9 @@ const matcher = require('../services/matcher');
 // 搜索歌曲
 router.get('/searchSong', async (req, res) => {
   try {
-    const { keyword, pageSize = 20, pageIndex = 1 } = req.query;
+    const { keyword, pageSize = 20, pageIndex = 1, source } = req.query;
     if (!keyword) return res.json({ code: 500, msg: '关键词不能为空' });
-    const data = await netease.searchSong(keyword, parseInt(pageSize), parseInt(pageIndex));
+    let data = await netease.searchSong(keyword, parseInt(pageSize), parseInt(pageIndex));
     res.json({ code: 200, data, msg: 'success' });
   } catch (e) {
     console.error('searchSong 失败:', e.message);
@@ -669,6 +669,7 @@ router.post('/play', async (req, res) => {
       res.json({ code: 200, data: r, msg: 'success' });
       return;
     }
+
 
     const neteaseUrl = async (songId) => {
       let startIdx = brChain.indexOf(br);

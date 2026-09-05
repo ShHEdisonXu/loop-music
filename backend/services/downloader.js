@@ -130,11 +130,13 @@ async function assertNotPreview(tmpAudio) {
 
 // 从搜索结果里挑与目标 歌名+歌手+专辑 三要素一致的记录。
 // 无一致版本返回 null（严禁退回首条，杜绝自动换源/兜底命中翻唱、翻版、Live/伴奏等错误版本）
+// 下载换源链路统一严格模式：专辑也必须一致，不回退到"仅歌名+歌手"
 function pickBestMatch(records, task) {
   if (!Array.isArray(records) || !records.length) return null;
   return matcher.findMatch(
     { name: task.music_name, artist: task.artist_name, album: task.album_name },
-    records
+    records,
+    { strict: true }
   );
 }
 
@@ -585,6 +587,36 @@ function reQueueTask(taskId, msg = '重新下载') {
   }
 }
 
+// 服务启动恢复：把数据库中 waiting/loading 的未完成任务重新拉回内存队列继续消费。
+// 解决"服务重启后任务永久卡在等待中"的问题（内存队列清空，waiting 记录无人消费）。
+// 同时做重复任务合并：同一 song_id 存在多条未完成任务（历史重试/换源留下的 orphan）时，
+// 仅保留最新一条入队下载，其余转为 error 并注明被接管，不静默删除、用户可见可清理。
+function resumePendingTasks() {
+  const rows = db.prepare("SELECT id, song_id FROM download_task WHERE download_status IN ('waiting','loading') ORDER BY id ASC").all();
+  if (!rows.length) return 0;
+  const latestId = new Map(); // song_id -> 最新任务 id
+  for (const r of rows) latestId.set(r.song_id, r.id);
+  let restored = 0;
+  let folded = 0;
+  for (const r of rows) {
+    const latest = latestId.get(r.song_id);
+    if (r.id !== latest) {
+      // 历史重复/孤儿任务：折叠为 error（不删除），由最新任务接管下载
+      db.prepare("UPDATE download_task SET download_status = 'error', download_msg = ?, download_update_time = ? WHERE id = ?")
+        .run('检测到重复未完成任务（由任务 #' + latest + ' 接管），已折叠', new Date().toISOString().replace('T', ' ').slice(0, 19), r.id);
+      folded++;
+      continue;
+    }
+    // 唯一任务：loading → waiting 并重新入队消费
+    updateTask(r.id, 'waiting', '服务重启，恢复下载');
+    if (!queue.includes(r.id)) queue.push(r.id);
+    restored++;
+  }
+  console.log(`[resume] 服务重启恢复 ${restored} 个未完成任务, 折叠重复 ${folded} 个`);
+  pump();
+  return restored;
+}
+
 // 自动切 GD-joox 兜底：任务最终失败时，自动按「歌名+歌手」走 GD 聚合搜索 joox 平台匹配，
 // 将任务标记为 GD 任务（gd=1, source_platform=joox, url_id=平台id）重新入队，走 isGd 分支取海外直链重下，
 // 覆盖网易云无版权/付费死角。仅对普通搜索源生效（GD 聚合源 / external 外部源 / pending 强制重下语义不干预）
@@ -630,21 +662,26 @@ async function failTask(taskId, task, msg) {
   updateTask(taskId, 'error', msg);
 }
 
-// 入队下载（三层去重：song_id → 本地元数据识别 → 路径二次）
+// 入队下载（去重：song_id 已成功 → 已存在未完成任务 → 本地元数据识别 → 路径二次）
 function enqueueDownload(song, source = 'search') {
   const br = song.brType || config.defaultBrType;
-  // ① song_id + 音质 精确去重（保留现逻辑）
+  // ① song_id + 音质 精确去重（已成功下载）
   const existing = isDownloaded(song.id, br);
   if (existing) {
     return { status: 'duplicate', filePath: existing };
   }
-  // ② 本地元数据识别（严格：歌名+歌手+专辑）
+  // ② 同曲目已有未完成任务（waiting/loading/supplement/error）→ 不再重复创建。
+  // 修复：重试/换源后卡 waiting 的历史场景，搜索页重复点击同一首会产生第二条记录。
+  if (hasExistingTask(song.id)) {
+    return { status: 'queued-dedup' };
+  }
+  // ③ 本地元数据识别（严格：歌名+歌手+专辑）
   const matched = localLibrary.matchByMetadata(song);
   if (matched) {
     const pendingId = localLibrary.addPending(song, br, matched.file_path, source);
     return { status: 'pending', pendingId, matchedFile: matched.file_path };
   }
-  // ③ 正常入队
+  // ④ 正常入队
   const taskId = createTask(song, source);
   queue.push(taskId);
   pump();
@@ -731,5 +768,6 @@ module.exports = {
   createTask,
   updateTask,
   reQueueTask,
+  resumePendingTasks,
   buildTargetPath
 };

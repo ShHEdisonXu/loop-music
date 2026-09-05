@@ -62,13 +62,17 @@ function trackMatch (want, cand) {
 }
 
 // 从候选列表取第一个三要素一致的记录；无匹配返回 null（严禁退回首条）
-function findMatch (want, records) {
+// opts.strict=true 时关闭宽松回退：三要素（歌名+歌手+专辑）完全一致才放行，
+// 适用于"下载换源"等必须避免命中跨专辑/重制版的场景；播放等保证可听性的场景保持宽松回退。
+function findMatch (want, records, opts) {
   if (!Array.isArray(records)) return null
+  const strict = !!(opts && opts.strict)
   // 优先级1：三要素严格一致（含专辑精确匹配，防翻唱/翻版/伴奏误命中）
   for (const r of records) {
     if (r && trackMatch(want, r)) return r
   }
-  // 优先级2：宽松回退——歌名+歌手一致即放行。
+  if (strict) return null
+  // 优先级2（仅非严格模式）：宽松回退——歌名+歌手一致即放行。
   // 场景：目标带专辑信息但候选歌手专辑命名差异（全曲集/单曲等）导致严格匹配失配，
   // 此时若不回退会误判"无音源"。仅当歌名与主歌手均一致才放行，杜绝命中无关歌曲。
   for (const r of records) {

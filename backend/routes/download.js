@@ -30,7 +30,9 @@ router.post('/downloadSong', (req, res) => {
       backendProtocol: backendProtocol || ''
     };
     const result = downloader.enqueueDownload(song, 'search');
-    if (result.status === 'duplicate') {
+    if (result.status === 'queued-dedup') {
+      res.json({ code: 200, msg: '该歌曲已在下载队列中，不重复添加', data: { dedup: true } });
+    } else if (result.status === 'duplicate') {
       res.json({ code: 200, msg: '歌曲已下载过，跳过', data: { duplicate: true, filePath: result.filePath } });
     } else if (result.status === 'pending') {
       res.json({ code: 200, msg: '本地已存在相同歌曲（元数据匹配），已移至待处理栏', data: { pending: true, pendingId: result.pendingId, matchedFile: result.matchedFile } });

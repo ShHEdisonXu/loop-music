@@ -4,6 +4,7 @@ const cors = require('cors');
 const config = require('./config');
 const monitor = require('./routes/monitor');
 const localLibrary = require('./services/localLibrary');
+const downloader = require('./services/downloader');
 
 const app = express();
 app.use(cors());
@@ -50,6 +51,10 @@ app.listen(config.port, () => {
   console.log(`[下载服务] 网易云后端: ${config.ncmApiBase}`);
   console.log(`[下载服务] 音乐目录: ${config.musicRoot}`);
   monitor.startMonitor();
+
+  // 启动恢复：把上次会话遗留的 waiting/loading 任务重新入队消费（防"卡在等待中"），
+  // 并对同曲目重复的未完成任务做折叠去重。
+  downloader.resumePendingTasks();
 
   // 后台预热本地曲库索引（首次全量扫描，不阻塞启动）
   const st = localLibrary.stats();

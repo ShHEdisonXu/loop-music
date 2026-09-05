@@ -160,22 +160,22 @@ router.post('/switchSource', async (req, res) => {
     try {
       if (source === 'netease') {
         const r = await netease.searchSong(keyword, 10, 1);
-        matched = matcher.findMatch(song, r && r.records) || null;
+        matched = matcher.findMatch(song, r && r.records, { strict: true }) || null;
         if (matched) newId = String(matched.id || '');
       } else if (source === 'kuwo') {
         const r = await kuwo.search(keyword, 0, 10);
-        matched = matcher.findMatch(song, r && r.records) || null;
+        matched = matcher.findMatch(song, r && r.records, { strict: true }) || null;
         if (matched) newId = String(matched.rid || matched.id || '');
       } else if (source === 'kugou') {
         const kugou = require('../services/kugou');
         const r = await kugou.search(keyword, 1, 10);
-        matched = matcher.findMatch(song, r && r.records) || null;
+        matched = matcher.findMatch(song, r && r.records, { strict: true }) || null;
         if (matched) newId = String(matched.FileHash || matched.hash || matched.id || '');
       } else if (source === 'joox') {
         const gd = require('../services/gd');
         const sd = await gd.gdRequest({ types: 'search', source: 'joox', name: keyword, pagesize: '10' });
         const recs = (Array.isArray(sd) ? sd : (sd && sd.records) || []);
-        matched = matcher.findMatch(song, recs) || null;
+        matched = matcher.findMatch(song, recs, { strict: true }) || null;
         if (matched) newId = String(matched.url_id || matched.id || '');
       }
     } catch (e) {

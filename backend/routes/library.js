@@ -425,15 +425,29 @@ router.post('/meta/match', async (req, res) => {
         } }
       ];
       const pool = only ? srcs.filter(s => s.name === only) : srcs;
+      const titleNorm = mnorm(title);
+      // 候选质量评分：有封面/无专辑ID/时长/非劣质后缀 是主要因子，用于把官方主版本排前、
+      // 缺封面与伴奏/Live/翻唱/Remix 等劣质条目排后（同档内净分数高者在前）
+      const qRank = (r) => {
+        let q = 0;
+        if (r.musicImage || r.musicPic || r.pic) q += 8;
+        if (r.musicDuration || r.duration) q += 4;
+        if (r.AlbumID || r.albumid) q += 2;
+        if (r.bits && r.bits.length > 0) q += 1;
+        const n = mnorm(r.musicName || '');
+        if (/(伴奏|remix|live|ktv|翻唱|3d|环绕|纯音乐|instrumental|cover|混音|mix|串烧)/.test(n)) q -= 6;
+        return q;
+      };
       for (const s of pool) {
         try {
           const rows = await s.fn();
           const rowsArr = rows.slice();
-          // 标题完全一致者优先
+          // 排序：标题完全一致者优先；同档内按质量分降序（官方有封面版本靠前，劣质条目后置）
           rowsArr.sort((a, b) => {
-            const aHit = mnorm(a.musicName || '') === mnorm(title) ? 0 : 1;
-            const bHit = mnorm(b.musicName || '') === mnorm(title) ? 0 : 1;
-            return aHit - bHit;
+            const aHit = mnorm(a.musicName || '') === titleNorm ? 0 : 1;
+            const bHit = mnorm(b.musicName || '') === titleNorm ? 0 : 1;
+            if (aHit !== bHit) return aHit - bHit;
+            return qRank(b) - qRank(a);
           });
           for (const r of rowsArr.slice(0, 8)) pushRow(r, s.name);
         } catch (e) {

@@ -78,6 +78,16 @@ function cleanName(s) {
     .trim();
 }
 
+// 酷狗封面拼装：搜索接口不直接给标准封面 URL，但每条 raw item 自带 Image 占位 URL
+// （{size} 可变尺寸，无 AlbumID 的翻唱/Live/伴奏也会返回 singerimg 头图），替换 {size}→300 即得；
+// 个别条目 Image 为空时，再退化用 AlbumID 拼 imge.kugou.com 图床（已验证可访问）。
+function kugouCover(s) {
+  const img = (s && (s.Image || s.AlbumImage)) || '';
+  if (img) return String(img).replace('{size}', '300').replace('http://', 'https://');
+  const albumId = (s && (s.AlbumID || s.album_id)) || '';
+  return albumId ? 'https://imge.kugou.com/stdmusic/300/' + albumId + '.jpg' : '';
+}
+
 // 搜索歌曲（返回 sqmusic records 格式，附带酷狗取链所需 FileHash / AlbumID / Duration）
 async function search(keyword, page = 1, size = 20) {
   const res = await retry(() => http.get('https://songsearch.kugou.com/song_search_v2', {
@@ -96,8 +106,8 @@ async function search(keyword, page = 1, size = 20) {
     musicName: cleanName(s.SongName || s.songname || ''),
     musicArtists: cleanName((s.SingerName || s.singer_name || '').replace(/,/g, '/')),
     musicAlbum: cleanName(s.AlbumName || s.album_name || ''),
-    // 酷狗搜索接口不返回封面 URL，但有 AlbumID，可拼 imge.kugou.com 图床（已验证 200）
-    musicImage: (s.AlbumID || s.album_id) ? 'https://imge.kugou.com/stdmusic/300/' + (s.AlbumID || s.album_id) + '.jpg' : '',
+    // 封面：Image 占位 URL（含无 AlbumID 特殊版本）→ 退化 AlbumID 拼图床
+    musicImage: kugouCover(s),
     musicDuration: (parseInt(s.Duration || '0', 10) || 0) * 1000,
     bits: ['standard'],
     plugName: 'kugou',

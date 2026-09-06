@@ -121,8 +121,8 @@ function kuwoCover(s) {
   return 'https://img4.kuwo.cn/star/albumcover/' + bigger;
 }
 
-// 搜索歌曲（返回 sqmusic records 格式）
-async function search(keyword, page = 0, size = 30) {
+// r.s 老接口搜索（返回 {list, total}；search 与封面二级兜底共用）
+async function rawSearch(keyword, page = 0, size = 30) {
   const res = await http.get('https://search.kuwo.cn/r.s', {
     params: {
       client: 'kt', all: keyword, pn: page, rn: size, uid: '',
@@ -132,7 +132,32 @@ async function search(keyword, page = 0, size = 30) {
     },
   });
   const data = res.data;
-  const list = (data && data.abslist) || [];
+  return { list: (data && data.abslist) || [], total: (data && (data.total || 0)) || 0 };
+}
+
+// 空封面二级兜底：r.s 老接口对翻唱/混音/Remix 条目不返回 web_albumpic_short/albumpic_short
+// 导致封面为空。此函数按「歌名+歌手」二次调用 r.s，拾取首个带封面的官方版本封面作为兜底。
+async function coverFallback(name, artist) {
+  const kw = [artist, name].filter(Boolean).join(' ').trim();
+  if (!kw) return '';
+  let list = [];
+  try {
+    list = (await rawSearch(kw, 0, 15)).list;
+  } catch (e) {
+    return '';
+  }
+  for (const s of list) {
+    const c = kuwoCover(s);
+    if (c) return c;
+  }
+  return '';
+}
+
+// 搜索歌曲（返回 sqmusic records 格式）
+// 封面策略：先取本条目 album cover；缺封面（翻唱/混音/Remix 常见）→ 按 歌名+歌手 二次搜索兜底；
+// 兜底仍拿不到的条目保持空封面，供排序链路将劣质条目后置。
+async function search(keyword, page = 0, size = 30) {
+  const { list, total } = await rawSearch(keyword, page, size);
   const records = list.map((s) => {
     const rid = String(s.MUSICRID || s.ID || '');
     return {
@@ -148,7 +173,22 @@ async function search(keyword, page = 0, size = 30) {
       source: 'kuwo',
     };
   });
-  return { records, searchTotal: (data && (data.total || records.length)) || records.length };
+  // 二级兜底（仅缺封面且有歌名/歌手的条目）：按 歌名+歌手 并发拾取封面，最多处理前 4 条，
+  // 同「歌名+歌手」只搜一次；超出部分与兜底失败条目留给排序后置处理
+  const missing = records.filter((r) => !r.musicImage && (r.musicName || r.musicArtists) && r.rid);
+  if (missing.length) {
+    const seenKw = new Set();
+    const tasks = [];
+    for (const r of missing.slice(0, 4)) {
+      const artist = String(r.musicArtists || '').replace(/&/g, ' ').split('/')[0].trim();
+      const kw = [r.musicName, artist].filter(Boolean).join(' ').trim();
+      if (!kw || seenKw.has(kw)) continue;
+      seenKw.add(kw);
+      tasks.push(coverFallback(r.musicName, artist).then((c) => { if (c) r.musicImage = c; }));
+    }
+    await Promise.all(tasks);
+  }
+  return { records, searchTotal: total || records.length };
 }
 
 // 播放/下载直链（mp3；flac 需会员，前端按需降级）
@@ -227,4 +267,4 @@ async function getNewSongs(pn = 1, rn = 20) {
   return getBangList(489928, pn, rn);
 }
 
-module.exports = { search, getPlayUrl, getBangMenu, getBangList, getBangIdMap, getBanner, getRecPlaylist, getNewSongs, getToken, genSecret };
+module.exports = { search, rawSearch, coverFallback, getPlayUrl, getBangMenu, getBangList, getBangIdMap, getBanner, getRecPlaylist, getNewSongs, getToken, genSecret };

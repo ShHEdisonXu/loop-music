@@ -860,7 +860,9 @@ async function verifyQrCookieValid(cookie) {
     const data = (resp.data && resp.data.data) || {};
     const account = data.account || {};
     const profile = data.profile || {};
-    const loggedIn = !!(account.userId && !account.anonimousUser && profile.userId);
+    // ncm-api /login/status 的 account 返回 id 而非 userId，两者都兼容
+    const uid = account.userId || account.id;
+    const loggedIn = !!(uid && !account.anonimousUser && profile.userId);
     return { valid: loggedIn, error: '' };
   } catch (e) {
     return { valid: false, error: e.message };

@@ -336,6 +336,26 @@ router.post('/neteaseLogout', async (req, res) => {
   }
 });
 
+// 粘贴 Cookie 登录：校验真实登录态后落盘（绕过扫码风控）
+router.post('/ncmCookie', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const cookie = String(body.cookie || body.ncmCookie || '').trim();
+    if (!cookie) return res.json({ code: 400, msg: '缺少 cookie，请粘贴完整 Cookie' });
+    const v = await netease.verifyQrCookieValid(cookie);
+    if (v && v.valid) {
+      netease.saveNcmCookie(cookie);
+      console.log('[netease] 粘贴 cookie 校验通过，已落盘');
+      return res.json({ code: 200, msg: '登录成功', data: { valid: true } });
+    }
+    console.warn('[netease] 粘贴 cookie 校验未通过(可能未登录/匿名/风控降级): ' + (v && v.error || '匿名会话'));
+    return res.json({ code: 400, msg: 'Cookie 校验未通过（可能未登录或匿名会话），请重新登录网易云后复制 Cookie', data: { valid: false, error: (v && v.error) ? v.error : 'anonymous' } });
+  } catch (e) {
+    console.error('ncmCookie 导入失败:', e.message);
+    res.json({ code: 500, msg: '导入失败: ' + e.message.slice(0, 100) });
+  }
+});
+
 // ===================== 酷我音源 =====================
 const kuwo = require('../services/kuwo');
 

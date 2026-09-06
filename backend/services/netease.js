@@ -250,6 +250,12 @@ const client = {
   post(url, cfg) { return throttledRequest('post', url, cfg); }
 };
 
+// 网易云封面 picUrl 返回 http 协议，在 https 页面会被 mixed content 拦截 / 图床防盗链，
+// 统一替换为 https（https://p*.music.126.net 已验证可访问）
+function neteaseHttps(url) {
+  return url ? String(url).replace(/^http:\/\//, 'https://') : '';
+}
+
 // 搜索歌曲
 // 返回前端期望的 records 格式
 async function searchSong(keyword, pageSize = 20, pageIndex = 1) {
@@ -264,7 +270,7 @@ async function searchSong(keyword, pageSize = 20, pageIndex = 1) {
     musicName: s.name,
     musicArtists: (s.ar || []).map(a => a.name).join('/'),
     artistsIds: (s.ar || []).map(a => String(a.id)).join(','),
-    musicImage: (s.al && s.al.picUrl) || '',
+    musicImage: neteaseHttps(s.al && s.al.picUrl),
     musicAlbum: (s.al && s.al.name) || '',
     // 单曲卡片点击“专辑”标签、下载单曲时依赖专辑ID
     albumid: (s.al && String(s.al.id)) || '',
@@ -481,7 +487,7 @@ async function getSongDetail(id) {
     artistIds: (s.ar || []).map(a => String(a.id)).join(','),
     album: (s.al && s.al.name) || '',
     albumId: (s.al && String(s.al.id)) || '',
-    image: (s.al && s.al.picUrl) || '',
+    image: neteaseHttps(s.al && s.al.picUrl),
     duration: s.dt || 0,
     date: (s.al && s.al.publishTime) ? String(new Date(s.al.publishTime).getFullYear()) : ''
   };
@@ -494,7 +500,7 @@ async function getAlbumDetail(id) {
   const songs = resp.data.songs || [];
   return {
     // 字段对齐前端 AlbumInfo.vue：albumImg/albumName/albumSinger/albumTime/albumDescribe
-    albumImg: album.picUrl || '',
+    albumImg: neteaseHttps(album.picUrl),
     albumName: album.name || '',
     albumSinger: (album.artist && album.artist.name) || '',
     albumSongCount: album.size || songs.length,

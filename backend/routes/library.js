@@ -366,14 +366,15 @@ function mnorm (s) { return String(s || '').replace(/[\s·・.．,，、/()（�
 
 router.post('/meta/match', async (req, res) => {
   try {
-    const { id, combos, song } = req.body || {};
+    // source 可选：传 'netease'|'qq'|'kuwo'|'kugou'|'itunes'|'deezer' 时只收集该源；缺省聚合全部源
+    const { id, combos, song, source } = req.body || {};
     const title = (song && song.name) || '';
     const artist = (song && song.artist) || '';
     const album = (song && song.album) || '';
     if (!id || !title) return res.json({ code: 500, msg: '缺少歌曲信息' });
 
     // 多线路聚合搜索：按 歌名|歌手 去重，netease 主源在前，其余源补足候选
-    async function collectSources (kw) {
+    async function collectSources (kw, only = '') {
       const out = [];
       const seen = new Set();
       const pushRow = (r, src) => {
@@ -423,7 +424,8 @@ router.post('/meta/match', async (req, res) => {
           }));
         } }
       ];
-      for (const s of srcs) {
+      const pool = only ? srcs.filter(s => s.name === only) : srcs;
+      for (const s of pool) {
         try {
           const rows = await s.fn();
           const rowsArr = rows.slice();
@@ -505,7 +507,7 @@ router.post('/meta/match', async (req, res) => {
       let kw = title;
       if (k === 'title_artist' && artist) kw = title + ' ' + artist;
       else if (k === 'title_artist_album') kw = [title, artist, album].filter(Boolean).join(' ');
-      const rows = await collectSources(kw);
+      const rows = await collectSources(kw, source);
       const cands = [];
       for (const r of rows.slice(0, 12)) cands.push(await toCand(r));
       out.push({ key: k, label: MCOMBO_LABEL[k] || k, keyword: kw, candidates: cands });

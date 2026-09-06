@@ -111,6 +111,16 @@ function parseQuality(minfo) {
   return ['standard'];
 }
 
+// 酷我封面拼装：r.s 老接口 abslist 不含 PIC 字段，但 web_albumpic_short 提供专辑封面短路径
+// （形如 120/s3s94/93/xxxx.jpg），拼到酷我图床域名生成完整封面 URL；
+// 把 120 小图尺寸提为 300 保证清晰度（https 图床已验证可访问）
+function kuwoCover(s) {
+  const p = (s && (s.web_albumpic_short || s.albumpic_short)) || '';
+  if (!p) return '';
+  const bigger = String(p).replace(/^120\//, '300/');
+  return 'https://img4.kuwo.cn/star/albumcover/' + bigger;
+}
+
 // 搜索歌曲（返回 sqmusic records 格式）
 async function search(keyword, page = 0, size = 30) {
   const res = await http.get('https://search.kuwo.cn/r.s', {
@@ -131,7 +141,7 @@ async function search(keyword, page = 0, size = 30) {
       musicName: s.NAME || '',
       musicArtists: s.ARTIST || '',
       musicAlbum: s.ALBUM || '',
-      musicImage: s.PIC || '',
+      musicImage: kuwoCover(s) || s.PIC || '',
       musicDuration: parseInt(s.DURATION || 0, 10) * 1000 || 0,
       bits: parseQuality(s.MINFO),
       plugName: 'kuwo',

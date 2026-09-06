@@ -96,7 +96,8 @@ async function search(keyword, page = 1, size = 20) {
     musicName: cleanName(s.SongName || s.songname || ''),
     musicArtists: cleanName((s.SingerName || s.singer_name || '').replace(/,/g, '/')),
     musicAlbum: cleanName(s.AlbumName || s.album_name || ''),
-    musicImage: '',
+    // 酷狗搜索接口不返回封面 URL，但有 AlbumID，可拼 imge.kugou.com 图床（已验证 200）
+    musicImage: (s.AlbumID || s.album_id) ? 'https://imge.kugou.com/stdmusic/300/' + (s.AlbumID || s.album_id) + '.jpg' : '',
     musicDuration: (parseInt(s.Duration || '0', 10) || 0) * 1000,
     bits: ['standard'],
     plugName: 'kugou',

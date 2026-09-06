@@ -45,7 +45,8 @@ router.post('/list', (req, res) => {
       // 需求14：监控来源标注（source='monitor' 表示由歌单监控触发的任务）
       r.isMonitor = r.taskSource === 'monitor';
       if (r.downloadStatus === 'loading') {
-        const p = downloader.getProgress(r.id);
+        let p = null;
+        if (typeof downloader.getProgress === 'function') p = downloader.getProgress(r.id);
         if (p) r.progress = { received: p.received || 0, total: p.total || 0, speed: p.speed || 0 };
       }
     }

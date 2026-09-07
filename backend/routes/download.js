@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const downloader = require('../services/downloader');
 const netease = require('../services/netease');
+const localLibrary = require('../services/localLibrary');
 const config = require('../config');
 
 // 下载单曲
@@ -65,13 +66,33 @@ router.post('/downloadAlbum', async (req, res) => {
   }
 });
 
-// 下载歌手全部专辑（遍历专辑 → 专辑内全部歌曲入队）
+// 分页遍历该歌手全部专辑（网易云 /artist/album 每页 100，offset 翻页拼接全量）
+async function collectAllAlbums(id) {
+  const albums = [];
+  let offset = 0;
+  const pageSize = 100;
+  while (true) {
+    const raw = await netease.getArtistAlbumPage(id, pageSize, offset);
+    if (!raw.length) break;
+    for (const a of raw) {
+      albums.push({
+        albumId: String(a.id),
+        albumName: a.name || '',
+        albumTime: a.publishTime ? String(new Date(a.publishTime).getFullYear()) + ' 年' : ''
+      });
+    }
+    if (raw.length < pageSize) break;
+    offset += pageSize;
+  }
+  return albums;
+}
+
+// 下载歌手全部专辑（遍历全部专辑 → 专辑内全部歌曲入队）
 router.post('/downloadArtistAlbum', async (req, res) => {
   try {
     const { id, artistName, brType } = req.body || {};
     if (!id) return res.json({ code: 500, msg: '缺少歌手ID' });
-    const info = await netease.getArtistInfo(id);
-    const albums = info.albums || [];
+    const albums = await collectAllAlbums(id);
     if (!albums.length) return res.json({ code: 200, msg: '该歌手暂无专辑可下载', data: { added: 0, dup: 0, albums: 0 } });
     let added = 0, dup = 0, pending = 0;
     for (const alb of albums) {
@@ -91,10 +112,51 @@ router.post('/downloadArtistAlbum', async (req, res) => {
         console.error('歌手专辑下载失败 album=' + alb.albumId + ': ' + e.message);
       }
     }
-    const name = info.musicArtistsName || artistName || '该歌手';
-    res.json({ code: 200, msg: `「${name}」全部专辑已加入下载队列：${added} 首（跳过 ${dup} 首已下载，${pending} 首已移至待处理）`, data: { added, dup, pending, albums: albums.length } });
+    res.json({ code: 200, msg: `「${artistName || '该歌手'}」全部专辑已加入下载队列：${added} 首（跳过 ${dup} 首已下载，${pending} 首已移至待处理）`, data: { added, dup, pending, albums: albums.length } });
   } catch (e) {
     res.json({ code: 500, msg: '下载歌手失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 补全歌手全部专辑（遍历全部专辑 → 比对本地曲库，仅将本地缺失的歌曲加入下载队列，已存在自动跳过）
+router.post('/downloadArtistAlbumComplete', async (req, res) => {
+  try {
+    const { id, artistName, brType } = req.body || {};
+    if (!id) return res.json({ code: 500, msg: '缺少歌手ID' });
+    const albums = await collectAllAlbums(id);
+    if (!albums.length) return res.json({ code: 200, msg: '该歌手暂无专辑可下载', data: { added: 0, skipped: 0, albums: 0 } });
+    let added = 0, skipped = 0, fail = 0;
+    for (const alb of albums) {
+      try {
+        const detail = await netease.getAlbumDetail(alb.albumId);
+        const songs = (detail.musics || []).map(m => ({
+          id: m.id,
+          musicName: m.musicName,
+          artistName: m.musicArtists || artistName || '未知歌手',
+          albumName: m.musicAlbum || alb.albumName || '未知专辑',
+          plugName: 'netease',
+          brType: brType || config.defaultBrType
+        }));
+        if (!songs.length) continue;
+        // 逐条与本地曲库比对，未命中的（本地缺失）才入队
+        let hits = [];
+        try { hits = localLibrary.matchLocalExists(songs) || []; } catch (e) { hits = []; }
+        const missing = [];
+        songs.forEach((s, i) => {
+          if (hits[i] && hits[i].exists) skipped++;
+          else missing.push(s);
+        });
+        if (!missing.length) continue;
+        const result = downloader.enqueueBatch(missing, 'album');
+        added += result.added;
+      } catch (e) {
+        fail++;
+        console.error('歌手专辑补全失败 album=' + alb.albumId + ': ' + e.message);
+      }
+    }
+    res.json({ code: 200, msg: `「${artistName || '该歌手'}」补全完成：新增 ${added} 首（本地已有 ${skipped} 首跳过` + (fail ? `，${fail} 个专辑失败` : '') + '）', data: { added, skipped, fail, albums: albums.length } });
+  } catch (e) {
+    res.json({ code: 500, msg: '补全歌手失败: ' + e.message.slice(0, 100) });
   }
 });
 

@@ -521,6 +521,12 @@ async function getAlbumDetail(id) {
   };
 }
 
+// 分页拉取歌手专辑原始列表（/artist/album 每次最多返回 limit 个，offset 分页用于全量遍历）
+async function getArtistAlbumPage(id, limit = 100, offset = 0) {
+  const resp = await client.get('/artist/album', { params: { id, limit, offset } });
+  return resp.data.hotAlbums || resp.data.albums || [];
+}
+
 // 获取歌手信息及专辑列表（字段对齐前端 ArtistInfo.vue）
 async function getArtistInfo(id) {
   const detailResp = await client.get('/artist/detail', { params: { id } });
@@ -860,9 +866,7 @@ async function verifyQrCookieValid(cookie) {
     const data = (resp.data && resp.data.data) || {};
     const account = data.account || {};
     const profile = data.profile || {};
-    // ncm-api /login/status 的 account 返回 id 而非 userId，两者都兼容
-    const uid = account.userId || account.id;
-    const loggedIn = !!(uid && !account.anonimousUser && profile.userId);
+    const loggedIn = !!(account.userId && !account.anonimousUser && profile.userId);
     return { valid: loggedIn, error: '' };
   } catch (e) {
     return { valid: false, error: e.message };
@@ -1006,6 +1010,7 @@ module.exports = {
   getLyric,
   getSongDetail,
   getAlbumDetail,
+  getArtistAlbumPage,
   getArtistInfo,
   getArtistList,
   parsePlaylistUrl,

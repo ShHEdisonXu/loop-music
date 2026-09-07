@@ -5,6 +5,35 @@ const router = express.Router();
 const netease = require('../services/netease');
 const scraper = require('../services/scraper');
 
+// ===== 聚合接口 TTL 缓存（治本：网页端重复拉取主页/歌单/新碟等网易云数据，避免每次转发上游）
+// 慢接口（topPlaylist/newAlbums/djRecommend/homepage 等）经 ncm-api 网关转发网易云，真机首屏多接口串行 4~6s。
+// 加 5 分钟内存缓存 + 并发去重（inflight 复用），首屏后同类请求直接命中缓存，毫秒级返回。
+const AGG_TTL_MS = parseInt(process.env.AGG_TTL_MS || '300000', 10) || 300000; // 默认 5 分钟
+const aggCache = new Map(); // key -> { value, at }
+const aggInflight = new Map(); // key -> Promise（并发去重）
+async function aggCached(key, fn) {
+  const now = Date.now();
+  const hit = aggCache.get(key);
+  if (hit && now - hit.at < AGG_TTL_MS) return hit.value;
+  // 已有同 key 请求在途 → 直接复用，避免打爆上游
+  if (aggInflight.has(key)) return aggInflight.get(key);
+  const p = (async () => {
+    try {
+      const value = await fn();
+      aggCache.set(key, { value, at: Date.now() });
+      return value;
+    } catch (e) {
+      // 失败不缓存，删除在途标记以便下次重试
+      aggCache.delete(key);
+      throw e;
+    } finally {
+      aggInflight.delete(key);
+    }
+  })();
+  aggInflight.set(key, p);
+  return p;
+}
+
 // 搜索歌曲
 router.get('/searchSong', async (req, res) => {
   try {
@@ -142,8 +171,8 @@ router.get('/searchDj', async (req, res) => {
 // 推荐播客
 router.get('/djRecommend', async (req, res) => {
   try {
-    const { limit = 12 } = req.query;
-    const data = await netease.getDjRecommend(parseInt(limit));
+    const n = parseInt(req.query.limit) || 12;
+    const data = await aggCached(`djRecommend:${n}`, () => netease.getDjRecommend(n));
     res.json({ code: 200, data, msg: 'success' });
   } catch (e) {
     console.error('djRecommend 失败:', e.message);
@@ -166,10 +195,12 @@ router.get('/djDetail', async (req, res) => {
 
 // 按首字母获取歌手列表（A-Z，网易云数据）
 // area：-1 全部 / 7 华语 / 96 欧美 / 8 日本 / 16 韩国 / 0 其他，支持逗号分隔合并（如 8,16=日韩）
+// 前端歌手页按需分页每次翻页都会带参数打上游，同参数 5 分钟内命中缓存秒回
 router.get('/artistList', async (req, res) => {
   try {
     const { initial = '', pageSize = 30, pageIndex = 1, area = -1, type = -1 } = req.query;
-    const data = await netease.getArtistList(initial, parseInt(pageSize), parseInt(pageIndex), area, parseInt(type));
+    const key = `artistList:${initial}:${pageSize}:${pageIndex}:${area}:${type}`;
+    const data = await aggCached(key, () => netease.getArtistList(initial, parseInt(pageSize), parseInt(pageIndex), area, parseInt(type)));
     res.json({ code: 200, data, msg: 'success' });
   } catch (e) {
     console.error('artistList 失败:', e.message);
@@ -180,7 +211,7 @@ router.get('/artistList', async (req, res) => {
 // 网易云榜单列表
 router.get('/toplist', async (req, res) => {
   try {
-    const data = await netease.getToplist();
+    const data = await aggCached('toplist', () => netease.getToplist());
     res.json({ code: 200, data, msg: 'success' });
   } catch (e) {
     console.error('toplist 失败:', e.message);
@@ -192,7 +223,8 @@ router.get('/toplist', async (req, res) => {
 router.get('/topPlaylist', async (req, res) => {
   try {
     const { cat = '全部', limit = 12 } = req.query;
-    const data = await netease.getTopPlaylist(cat, parseInt(limit));
+    const n = parseInt(limit) || 12;
+    const data = await aggCached(`topPlaylist:${cat}:${n}`, () => netease.getTopPlaylist(cat, n));
     res.json({ code: 200, data, msg: 'success' });
   } catch (e) {
     console.error('topPlaylist 失败:', e.message);
@@ -218,7 +250,7 @@ router.get('/playlistDetail', async (req, res) => {
 // 轮播 Banner
 router.get('/banner', async (req, res) => {
   try {
-    const data = await netease.getBanner();
+    const data = await aggCached('banner', () => netease.getBanner());
     res.json({ code: 200, data, msg: 'success' });
   } catch (e) {
     console.error('banner 失败:', e.message);
@@ -229,8 +261,8 @@ router.get('/banner', async (req, res) => {
 // 新歌速递
 router.get('/newSongs', async (req, res) => {
   try {
-    const { limit = 20 } = req.query;
-    const data = await netease.getNewSongs(parseInt(limit));
+    const n = parseInt(req.query.limit) || 20;
+    const data = await aggCached(`newSongs:${n}`, () => netease.getNewSongs(n));
     res.json({ code: 200, data, msg: 'success' });
   } catch (e) {
     console.error('newSongs 失败:', e.message);
@@ -241,8 +273,8 @@ router.get('/newSongs', async (req, res) => {
 // 新碟上架
 router.get('/newAlbums', async (req, res) => {
   try {
-    const { limit = 10 } = req.query;
-    const data = await netease.getNewAlbums(parseInt(limit));
+    const n = parseInt(req.query.limit) || 10;
+    const data = await aggCached(`newAlbums:${n}`, () => netease.getNewAlbums(n));
     res.json({ code: 200, data, msg: 'success' });
   } catch (e) {
     console.error('newAlbums 失败:', e.message);
@@ -253,8 +285,8 @@ router.get('/newAlbums', async (req, res) => {
 // 个性化推荐歌单
 router.get('/recommendPlaylist', async (req, res) => {
   try {
-    const { limit = 12 } = req.query;
-    const data = await netease.getRecommendPlaylist(parseInt(limit));
+    const n = parseInt(req.query.limit) || 12;
+    const data = await aggCached(`recommendPlaylist:${n}`, () => netease.getRecommendPlaylist(n));
     res.json({ code: 200, data, msg: 'success' });
   } catch (e) {
     console.error('recommendPlaylist 失败:', e.message);
@@ -301,10 +333,14 @@ router.get('/qrStatus', async (req, res) => {
   }
 });
 
-// 当前登录状态（用户信息）
+// 当前登录状态（用户信息；转发网易云上游较慢，加 30s 短缓存，登出时清除）
+const AUTH_TTL_MS = 30000;
 router.get('/loginStatus', async (req, res) => {
   try {
+    const hit = aggCache.get('loginStatus');
+    if (hit && Date.now() - hit.at < AUTH_TTL_MS) return res.json({ code: 200, data: hit.value, msg: 'success' });
     const data = await netease.getLoginStatus();
+    aggCache.set('loginStatus', { value: data, at: Date.now() });
     res.json({ code: 200, data, msg: 'success' });
   } catch (e) {
     console.error('loginStatus 失败:', e.message);
@@ -328,6 +364,7 @@ router.get('/userPlaylist', async (req, res) => {
 // 网易云退出登录
 router.post('/neteaseLogout', async (req, res) => {
   try {
+    aggCache.delete('loginStatus'); // 登出后立即清登录态缓存
     const data = await netease.neteaseLogout();
     res.json({ code: 200, data, msg: 'success' });
   } catch (e) {
@@ -508,20 +545,23 @@ router.get('/gdplay', async (req, res) => {
 router.get('/homepage', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 12, 30);
-    // ncm 源偶发限流，带一次重试
-    const tryGet = async (fn, fallback) => {
-      for (let i = 0; i < 2; i++) {
-        try { const r = await fn(); if (Array.isArray(r) && r.length) return r; } catch (e) {}
-      }
-      return fallback;
-    };
-    const [banner, recommend, newSongs, topPlaylists] = await Promise.all([
-      tryGet(() => netease.getBanner(), []),
-      tryGet(() => netease.getRecommendPlaylist(limit), []),
-      tryGet(() => netease.getNewSongs(limit), []),
-      tryGet(() => netease.getTopPlaylist('全部', 8), [])
-    ]);
-    res.json({ code: 200, data: { banner, recommend, newSongs: newSongs.slice(0, limit), topPlaylists }, msg: 'success' });
+    const data = await aggCached(`homepage:${limit}`, async () => {
+      // ncm 源偶发限流，带一次重试
+      const tryGet = async (fn, fallback) => {
+        for (let i = 0; i < 2; i++) {
+          try { const r = await fn(); if (Array.isArray(r) && r.length) return r; } catch (e) {}
+        }
+        return fallback;
+      };
+      const [banner, recommend, newSongs, topPlaylists] = await Promise.all([
+        tryGet(() => netease.getBanner(), []),
+        tryGet(() => netease.getRecommendPlaylist(limit), []),
+        tryGet(() => netease.getNewSongs(limit), []),
+        tryGet(() => netease.getTopPlaylist('全部', 8), [])
+      ]);
+      return { banner, recommend, newSongs: newSongs.slice(0, limit), topPlaylists };
+    });
+    res.json({ code: 200, data, msg: 'success' });
   } catch (e) {
     res.json({ code: 500, msg: '获取主页失败: ' + e.message.slice(0, 100) });
   }

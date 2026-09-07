@@ -16,11 +16,15 @@ RUN set -eux; \
 # ---- 后端（dockerfile 内由 package-lock.json 执行 npm ci 源码安装）----
 WORKDIR /app
 COPY backend/ /app/
-RUN npm ci --no-audit --no-fund \
+RUN npm ci --no-audit --no-fund --omit=dev \
+    && npm cache clean --force \
+    && rm -rf /root/.npm \
     && rm -rf /app/data /app/diag*.js /app/*.tgz /app/*.log /app/.health
 
 # ---- ncm-api（官方镜像 /app 整体拷入，含 node_modules，纯 JS 无 ABI 问题）----
 COPY --from=ncmapi /app /app/ncm-api
+# ncm-api 内清理构建缓存/日志/示例数据，进一步减小镜像体积
+RUN rm -rf /app/ncm-api/.cache /app/ncm-api/tmp /app/ncm-api/logs 2>/dev/null || true
 
 # ---- 前端 ----
 RUN rm -rf /usr/share/nginx/html/*

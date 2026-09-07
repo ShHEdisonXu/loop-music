@@ -11,6 +11,24 @@ const scraper = require('../services/scraper');
 const AGG_TTL_MS = parseInt(process.env.AGG_TTL_MS || '300000', 10) || 300000; // 默认 5 分钟
 const aggCache = new Map(); // key -> { value, at }
 const aggInflight = new Map(); // key -> Promise（并发去重）
+
+// 判断聚合结果是否"无数据"（上游限流/空结果）：空则跳过缓存，避免污染 5 分钟窗口
+function isNoData(v) {
+  if (v == null) return true;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === 'object') {
+    if (Array.isArray(v.records)) return v.records.length === 0;    // artistList
+    if (Array.isArray(v.list)) return v.list.length === 0;          // toplist 等
+    const keys = Object.keys(v);
+    if (keys.length === 0) return true;
+    // 主页聚合 { banner, recommend, newSongs, topPlaylists }：所有数组字段均空视为无数据
+    const arrKeys = keys.filter((k) => Array.isArray(v[k]));
+    if (arrKeys.length > 0) return arrKeys.every((k) => v[k].length === 0);
+    return false;
+  }
+  return false;
+}
+
 async function aggCached(key, fn) {
   const now = Date.now();
   const hit = aggCache.get(key);
@@ -20,7 +38,12 @@ async function aggCached(key, fn) {
   const p = (async () => {
     try {
       const value = await fn();
-      aggCache.set(key, { value, at: Date.now() });
+      if (isNoData(value)) {
+        // 空结果不写缓存，下次请求重打上游
+        aggCache.delete(key);
+      } else {
+        aggCache.set(key, { value, at: Date.now() });
+      }
       return value;
     } catch (e) {
       // 失败不缓存，删除在途标记以便下次重试

@@ -1,0 +1,21 @@
+{
+  "name": "Loop · 音乐下载管家",
+  "short_name": "Loop",
+  "description": "Loop 音乐下载管家 · 搜索、下载、播放一站式",
+  "start_url": "/?home",
+  "display": "standalone",
+  "display_override": ["standalone", "browser"],
+  "screen_orientation": "portrait",
+  "orientation": "portrait",
+  "background_color": "#0B1217",
+  "theme_color": "#0B1217",
+  "apple_web_app": {
+    "status_bar_style": "black-translucent",
+    "title": "Loop"
+  },
+  "icons": [
+    { "src": "/icon-180.png", "sizes": "180x180", "type": "image/png", "purpose": "any apple-touch-icon" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

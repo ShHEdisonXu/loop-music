@@ -158,13 +158,14 @@ function walk(root) {
 
 // 通用写入/更新本地曲库一行完整标签（全量重建 / 增量扫描 / 下载成功 三方共用）
 // INSERT ... ON CONFLICT(file_path) DO UPDATE 幂等，不重复建行；字段拒绝写 null（用空串兜底）
-function upsertTrack(fp, meta, now) {
+function upsertTrack(fp, meta, now, createdAt) {
   const m = meta || {};
+  const addAt = createdAt || now;
   db.prepare(`
     INSERT INTO local_track (file_path, title, artist, album, album_artist, year, track, disc, genre, language,
       composer, lyricist, comment, bpm, duration, file_size, bit_rate, sample_rate, channels, bits_per_sample, format,
-      cover_url, norm_title, norm_artist, norm_album, fingerprint, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      cover_url, norm_title, norm_artist, norm_album, fingerprint, updated_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(file_path) DO UPDATE SET
       title = excluded.title, artist = excluded.artist, album = excluded.album,
       album_artist = excluded.album_artist, year = excluded.year, track = excluded.track,
@@ -175,7 +176,8 @@ function upsertTrack(fp, meta, now) {
       bits_per_sample = excluded.bits_per_sample, format = excluded.format,
       cover_url = excluded.cover_url,
       norm_title = excluded.norm_title, norm_artist = excluded.norm_artist,
-      norm_album = excluded.norm_album, fingerprint = excluded.fingerprint, updated_at = excluded.updated_at
+      norm_album = excluded.norm_album, fingerprint = excluded.fingerprint,
+      updated_at = excluded.updated_at, created_at = COALESCE(local_track.created_at, excluded.created_at)
   `).run(
     fp,
     m.title || '', m.artist || '', m.album || '', m.albumArtist || '',
@@ -185,7 +187,7 @@ function upsertTrack(fp, meta, now) {
     m.bitRate || 0, m.sampleRate || 0, m.channels || 0, m.bitsPerSample || 0, m.format || '',
     m.coverUrl || '',
     normalize(m.title || ''), normalize(m.artist || ''), normalize(m.album || ''),
-    fingerprint(m.title || '', m.artist || '', m.album || ''), now
+    fingerprint(m.title || '', m.artist || '', m.album || ''), now, addAt
   );
 }
 
@@ -206,6 +208,12 @@ async function rebuildLibrary(progressCb) {
   try {
       const files = walk(config.musicRoot);
       scanState.total = files.length;
+      // 全量重建前备份既有 created_at（file_path → 首次入库时间），DELETE 重建后回填，保证“添加时间”不因重建丢失
+      const oldCreated = new Map(
+        db.prepare('SELECT file_path, created_at FROM local_track').all()
+          .map(r => [r.file_path, r.created_at || null])
+          .filter(x => x[1])
+      );
       db.exec('DELETE FROM local_track');
       let inserted = 0;
       const now = new Date().toISOString();
@@ -218,7 +226,7 @@ async function rebuildLibrary(progressCb) {
       const insertTrack = (fp, meta) => {
         if (scanStopRequested) { done++; return; } // 已请求停止：不再入库，等待安全退出
         if (meta && (meta.title || meta.artist)) {
-          upsertTrack(fp, meta, now);
+          upsertTrack(fp, meta, now, oldCreated.get(fp) || now);
           inserted++;
         }
         done++;
@@ -360,7 +368,8 @@ function stats() {
 }
 
 // 本地曲库歌曲列表（全标签字段），支持按 歌名/歌手/专辑/作曲/作词 模糊过滤
-function listLocalTracks(kw = '') {
+// 支持 sort=addedAt（添加时间=created_at，首次入库时间，扫描/重建不覆盖）, dir=asc/desc
+function listLocalTracks(kw = '', sort = '', dir = 'desc') {
   let sql = 'SELECT * FROM local_track';
   const params = [];
   if (kw) {
@@ -368,7 +377,14 @@ function listLocalTracks(kw = '') {
     const like = '%' + kw + '%';
     params.push(like, like, like, like, like);
   }
-  sql += ' ORDER BY file_size DESC, id DESC LIMIT 2000';
+  const SORT_MAP = { addedAt: 'created_at', id: 'id' };
+  if (sort && SORT_MAP[sort]) {
+    const d = (dir || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    sql += ` ORDER BY ${SORT_MAP[sort]} ${d}, id DESC`;
+  } else {
+    sql += ' ORDER BY created_at DESC, id DESC';
+  }
+  sql += ' LIMIT 2000';
   const rows = db.prepare(sql).all(...params);
   return rows.map(rowToTrack);
 }
@@ -402,7 +418,8 @@ function rowToTrack(r) {
     channels: r.channels || 0,
     bitsPerSample: r.bits_per_sample || 0,
     cover: r.cover_url || '',
-    updatedAt: r.updated_at || ''
+    updatedAt: r.updated_at || '',
+    createdAt: r.created_at || ''
   };
 }
 
@@ -887,7 +904,12 @@ function extractCoverById (id) {
 
 // 批量本地是否存在匹配（今日推荐/搜索/歌单/专辑本地标注用）：
 // 与入参逐条对齐，未命中返回 null；命中返回 { exists,filePath,fileSize,format,... }
-function matchLocalExists(tracks = []) {
+// 本地匹配表内存缓存（60s TTL）：原实现每次调用都全表扫 1.3 万行，前端秒级并发多次直接拖垮响应（手机端 499 卡顿根因）
+const MATCH_CACHE_TTL = 60 * 1000;
+let _matchCache = { at: 0, strict: null, relaxed: null };
+function getMatchMaps () {
+  const now = Date.now();
+  if (_matchCache.strict && now - _matchCache.at < MATCH_CACHE_TTL) return _matchCache;
   const rows = db.prepare('SELECT * FROM local_track').all();
   const strict = new Map();
   const relaxed = new Map();
@@ -897,6 +919,12 @@ function matchLocalExists(tracks = []) {
     const k2 = (r.norm_title || normalize(r.title || '')) + '\u0001' + normalize(r.artist || '');
     if (!relaxed.has(k2)) relaxed.set(k2, r);
   }
+  _matchCache = { at: now, strict, relaxed, count: rows.length };
+  return _matchCache;
+}
+
+function matchLocalExists(tracks = []) {
+  const { strict, relaxed } = getMatchMaps();
   return (tracks || []).map((t) => {
     const title = t && (t.title || t.musicName);
     const artist = t && (t.artist || t.musicArtists || t.artistName);

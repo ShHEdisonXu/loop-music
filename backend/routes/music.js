@@ -110,7 +110,19 @@ router.post('/getLyric', async (req, res) => {
     const data = await netease.getLyric(id);
     res.json({ code: 200, data, msg: 'success' });
   } catch (e) {
-    res.json({ code: 200, data: { lyric: '' }, msg: 'success' });
+    res.json({ code: 200, data: { lyric: '', tlyric: '' }, msg: 'success' });
+  }
+});
+
+// 相似歌曲推荐（网易云 /simi/song）
+router.get('/similar', async (req, res) => {
+  try {
+    const { id } = req.query;
+    if (!id) return res.json({ code: 500, msg: '缺少歌曲ID' });
+    const data = await netease.getSimilarSongs(id);
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    res.json({ code: 200, data: { records: [] }, msg: 'success' });
   }
 });
 
@@ -124,6 +136,19 @@ router.get('/artistAlbumById', async (req, res) => {
   } catch (e) {
     console.error('artistAlbumById 失败:', e.message);
     res.json({ code: 500, msg: '获取歌手信息失败: ' + e.message.slice(0, 100) });
+  }
+});
+
+// 歌手歌曲列表（歌手详情页「歌曲」tab，分页）
+router.get('/artistSongs', async (req, res) => {
+  try {
+    const { id, pageSize, pageIndex } = req.query;
+    if (!id) return res.json({ code: 500, msg: '缺少歌手ID' });
+    const data = await netease.getArtistSongs(id, pageSize, pageIndex);
+    res.json({ code: 200, data, msg: 'success' });
+  } catch (e) {
+    console.error('artistSongs 失败:', e.message);
+    res.json({ code: 200, data: { songs: [], total: 0 }, msg: 'success' });
   }
 });
 

@@ -234,6 +234,94 @@ async function resolveFallbackSource(task, exclude = []) {
   return hits;
 }
 
+// ===== 下载时直接推断 language/genre（与 enrich 事后补全同一口径，只写内嵌标签）=====
+
+// 器乐/伴奏/纯音乐标题（命中则不写 language/genre，避免把「纯音乐」误标成中文歌）
+function isInstTitleLike(s) {
+  if (!s) return false;
+  return /(序曲|前奏曲|间奏|尾奏|变奏|演奏版|纯音[乐曲]|伴奏|独奏|协奏|器乐|序章|幕间曲|谢幕曲|开场曲|\boutro\b|\bintro\b|\boverture\b|\bprelude\b|\binterlude\b|\bpostlude\b|\binstrumental\b|\breprise\b|\bsolo\b)/i.test(String(s));
+}
+
+// 无歌词时用标题/歌手兜底判定语言（短文本，置信度低于歌词判定）
+function guessLangFromTitle(title, artist) {
+  const t = String(title || '') + ' ' + String(artist || '');
+  if (!t.trim()) return '';
+  if (isInstTitleLike(t)) return '';
+  const kana = (t.match(/[\u3040-\u30ff]/g) || []).length;
+  const hangul = (t.match(/[\uac00-\ud7af]/g) || []).length;
+  const han = (t.match(/[\u4e00-\u9fff]/g) || []).length;
+  const latin = (t.match(/[A-Za-z]/g) || []).length;
+  if (hangul > 0 && han === 0) return '韩语';
+  if (kana >= 1 && han === 0) return '日语';
+  if (kana >= 1 && han > 0 && kana / Math.max(1, han + kana) > 0.15) return '日语';
+  if (han > 0 && latin === 0) return '中文';
+  if (han > 0 && latin > 0 && han / Math.max(1, han + latin) > 0.5) return '中文';
+  if (latin > 0 && han === 0) return '英语';
+  return '';
+}
+
+// iTunes 流派名 → Loop 曲库中文流派口径（映射表命中才写，宁缺毋滥）
+const ITUNES_GENRE_ZH = {
+  'pop': '流行', 'rock': '摇滚', 'hard rock': '摇滚', 'metal': '金属', 'heavy metal': '重金属', 'punk': '朋克',
+  'electronic': '电子', 'dance': '电子舞曲', 'edm': '电子舞曲', 'house': '电子舞曲', 'techno': '电子舞曲',
+  'hip-hop/rap': '嘻哈/说唱', 'hip hop': '嘻哈/说唱', 'rap': '嘻哈/说唱', 'r&b/soul': 'R&B/灵魂乐', 'r&b': 'R&B/灵魂乐',
+  'soul': '灵魂乐', 'funk': '放克', 'disco': '迪斯科', 'reggae': '雷鬼', 'blues': '布鲁斯', 'jazz': '爵士',
+  'classical': '古典', 'opera': '歌剧', 'orchestral': '古典', 'folk': '民谣', 'country': '乡村', 'latin': '拉丁',
+  'mandopop': '华语流行', 'cantopop': '粤语流行', 'j-pop': 'J-POP', 'jpop': 'J-POP', 'k-pop': 'K-POP', 'kpop': 'K-POP',
+  'anime': 'ACG', 'anime soundtrack': 'ACG', 'j-rock': 'J-POP', 'soundtrack': '影视原声', 'film score': '影视原声',
+  'score': '影视原声', 'instrumental': '纯音乐', 'new age': '新世纪', 'ambient': '氛围', 'easy listening': '轻音乐',
+  'world': '世界音乐', 'vocal': '人声', 'musical': '音乐剧', 'christian': '福音', 'gospel': '福音', 'holiday': '节日音乐',
+  'children\'s music': '儿歌', 'children': '儿歌', 'alternative': '另类', 'indie': '独立', 'indie rock': '独立摇滚',
+  'singer/songwriter': '唱作人', 'comedy': '喜剧', 'spoken word': '朗读', 'broadway': '音乐剧', 'tango': '探戈',
+  'celtic': '凯尔特', 'african': '非洲音乐', 'lounge': '轻音乐', 'trip-hop': '嘻哈/说唱', 'lo-fi': '氛围',
+  'city pop': 'city pop/城市流行', 'synth-pop': '合成器流行', 'synthpop': '合成器流行', 'electropop': '电子流行',
+  'folk rock': '民谣摇滚', 'pop rock': '流行摇滚', 'soft rock': '流行摇滚', 'jazz fusion': '融合爵士', 'bossa nova': '波萨诺瓦',
+  'reggaeton': '雷鬼', 'house music': '电子舞曲', 'trance': '电子舞曲', 'drum and bass': '电子舞曲', 'dubstep': '电子舞曲'
+};
+function zhGenre(en) {
+  if (!en) return '';
+  const k = String(en).toLowerCase().trim();
+  if (ITUNES_GENRE_ZH[k]) return ITUNES_GENRE_ZH[k];
+  // 含主要词根的复合流派降级命中（如 "Modern Rock"→摇滚）
+  const reList = [
+    [/mandopop|华语/, '华语流行'], [/cantopop|粤语/, '粤语流行'], [/city pop/, 'city pop/城市流行'],
+    [/j-pop|jpop|anime/, 'J-POP'], [/k-pop|kpop/, 'K-POP'], [/hip hop|rap/, '嘻哈/说唱'],
+    [/r&b|soul/, 'R&B/灵魂乐'], [/metal/, '金属'], [/punk/, '朋克'], [/reggae/, '雷鬼'],
+    [/classical|opera|orchestr|symphon/, '古典'], [/jazz/, '爵士'], [/blues/, '布鲁斯'], [/folk/, '民谣'],
+    [/country/, '乡村'], [/latin|salsa|tango|bossa/, '拉丁'], [/soundtrack|score/, '影视原声'],
+    [/electronic|dance|techno|house|trance|edm|dubstep/, '电子舞曲'], [/ambient|new age/, '新世纪'],
+    [/easy listening|lounge/, '轻音乐'], [/instrumental/, '纯音乐'], [/rock/, '摇滚'], [/pop\b/, '流行']
+  ];
+  for (const [re, g] of reList) if (re.test(k)) return g;
+  return '';
+}
+
+// iTunes 单曲查询流派：命中且中文化成功才返回（短超时，失败静默返回空串）
+const genreCache = new Map();
+async function itunesGuessGenre(title, artist) {
+  try {
+    const t = String(title || '').trim(); const a = String(artist || '').trim();
+    if (!t) return '';
+    if (isInstTitleLike(t + ' ' + a)) return '';
+    const key = (a + '\u0000' + t).toLowerCase();
+    if (genreCache.has(key)) return genreCache.get(key);
+    const q = [t, a].filter(Boolean).join(' ').slice(0, 120);
+    const url = 'https://itunes.apple.com/search?term=' + encodeURIComponent(q) + '&entity=song&limit=3&media=music&country=TW';
+    const res = await fetch(url, { headers: { 'Accept': 'application/json' }, signal: AbortSignal.timeout(5000) });
+    let genre = '';
+    if (res.ok) {
+      const data = await res.json();
+      const list = data.results || [];
+      const tl = t.toLowerCase(); const al = a.toLowerCase();
+      let best = list.find(r => (r.trackName || '').toLowerCase() === tl && (!al || (r.artistName || '').toLowerCase() === al));
+      best = best || list[0];
+      if (best && best.primaryGenreName) genre = zhGenre(best.primaryGenreName);
+    }
+    genreCache.set(key, genre);
+    return genre;
+  } catch (e) { return ''; }
+}
+
 // 用 ffmpeg 写元数据 + 封面（非 FLAC 源自动转码为 FLAC）
 async function writeMetadata(inputPath, outputPath, meta, coverPath) {
   // 探测输入音频编码
@@ -260,6 +348,8 @@ async function writeMetadata(inputPath, outputPath, meta, coverPath) {
     '-metadata', `date=${meta.date || ''}`,
     '-metadata', `lyrics=${meta.lyrics || ''}`
   );
+  if (meta.language) args.push('-metadata', `language=${meta.language}`);
+  if (meta.genre) args.push('-metadata', `genre=${meta.genre}`);
   if (coverPath && fs.existsSync(coverPath)) {
     args.push('-map', '0', '-map', '1', '-c:v', 'copy', '-disposition:v', 'attached_pic');
   }
@@ -522,6 +612,19 @@ async function doDownload(taskId) {
       }
     } catch (e) { /* 歌词失败不阻塞 */ }
 
+    // 下载时直接推断 language/genre（先歌词判定、无歌词标题兜底；器乐曲与识别失败留空）
+    let langGuess = '';
+    let genreGuess = '';
+    try {
+      if (lyricText && !isInstTitleLike(song.musicName + ' ' + song.artistName)) {
+        const enrich = require('./enrich');
+        const lr = enrich.langFromLyrics(lyricText);
+        if (lr && lr.conf !== 'low') langGuess = lr.language || '';
+      }
+      if (!langGuess) langGuess = guessLangFromTitle(song.musicName, song.artistName);
+      genreGuess = await itunesGuessGenre(song.musicName, song.artistName);
+    } catch (e) { /* 识别失败不阻塞下载 */ }
+
     // 写元数据
     updateTask(taskId, 'loading', '写入元数据中');
     const tmpFinal = path.join(dir, `.${fileName}.meta.tmp`);
@@ -531,7 +634,9 @@ async function doDownload(taskId) {
       album: song.albumName,
       albumArtist: song.artistName,
       date: song.date || '',
-      lyrics: lyricText
+      lyrics: lyricText,
+      language: langGuess,
+      genre: genreGuess
     }, coverPath);
 
     // 移动到最终位置

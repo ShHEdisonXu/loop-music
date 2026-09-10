@@ -471,7 +471,29 @@ async function getSongUrl(id, brType = 'lossless') {
 async function getLyric(id) {
   const resp = await client.get('/lyric', { params: { id } });
   const lrc = resp.data.lrc || {};
-  return { lyric: lrc.lyric || '' };
+  const tlrc = resp.data.tlyric || {};
+  // 同时返回原文与翻译歌词，前端"译文开/关"依赖 tlyric
+  return { lyric: lrc.lyric || '', tlyric: tlrc.lyric || '' };
+}
+
+// 相似歌曲推荐（/simi/song）
+// 返回前端期望的 records 格式（与搜索接口保持一致）
+async function getSimilarSongs(id) {
+  const resp = await client.get('/simi/song', { params: { id, timestamp: Date.now() } });
+  const songs = resp.data.songs || [];
+  const records = songs.map(s => ({
+    id: String(s.id),
+    musicName: s.name,
+    musicArtists: (s.artists || []).map(a => a.name).join('/'),
+    artistsIds: (s.artists || []).map(a => String(a.id)).join(','),
+    musicImage: neteaseHttps(s.album && s.album.picUrl),
+    musicAlbum: (s.album && s.album.name) || '',
+    albumid: (s.album && String(s.album.id)) || '',
+    musicDuration: s.duration || 0,
+    bits: ['lossless', 'exhigh', 'standard'],
+    plugName: 'netease'
+  }));
+  return { records };
 }
 
 // 获取歌曲详情（用于下载时补全信息）
@@ -553,6 +575,31 @@ async function getArtistInfo(id) {
       albumImg: a.picUrl || a.blurPicUrl || '',
       albumTime: a.publishTime ? String(new Date(a.publishTime).getFullYear()) + ' 年' : ''
     }))
+  };
+}
+
+// 歌手歌曲列表（网易云 /artist/songs，支持 limit/offset 分页，返回 total 总数）
+// 用于歌手详情页「歌曲」tab（字段对齐前端 TrackRow）
+async function getArtistSongs(id, pageSize = 50, pageIndex = 1) {
+  const limit = Math.max(1, parseInt(pageSize) || 50);
+  const page = Math.max(1, parseInt(pageIndex) || 1);
+  const offset = (page - 1) * limit;
+  const resp = await client.get('/artist/songs', { params: { id, limit, offset, timestamp: Date.now() } });
+  const songs = resp.data.songs || [];
+  return {
+    songs: songs.map(s => ({
+      id: String(s.id),
+      musicName: s.name,
+      musicArtists: (s.ar || []).map(a => a.name).join('/'),
+      artistsIds: (s.ar || []).map(a => String(a.id)).join(','),
+      musicImage: neteaseHttps(s.al && s.al.picUrl),
+      musicAlbum: (s.al && s.al.name) || '',
+      albumid: (s.al && String(s.al.id)) || '',
+      musicDuration: s.dt || 0,
+      bits: ['lossless', 'exhigh', 'standard'],
+      plugName: 'netease'
+    })),
+    total: resp.data.total || songs.length
   };
 }
 
@@ -1008,10 +1055,12 @@ module.exports = {
   searchTips,
   getSongUrl,
   getLyric,
+  getSimilarSongs,
   getSongDetail,
   getAlbumDetail,
   getArtistAlbumPage,
   getArtistInfo,
+  getArtistSongs,
   getArtistList,
   parsePlaylistUrl,
   getPlaylistTracks,

@@ -12,6 +12,7 @@ const netease = require('../services/netease');
 const kuwo = require('../services/kuwo');
 const qq = require('../services/qq');
 const kugou = require('../services/kugou');
+const fpDup = require('../services/fpDup');
 
 // 本地曲库配置：读取（音乐文件夹 + 索引状态 + 挂载范围）
 router.get('/config', (req, res) => {
@@ -215,7 +216,9 @@ router.post('/scan/stop', (req, res) => {
 router.get('/local', (req, res) => {
   try {
     const kw = (req.query && req.query.kw) ? String(req.query.kw).trim() : '';
-    const list = localLibrary.listLocalTracks(kw);
+    const sort = (req.query && req.query.sort) ? String(req.query.sort).trim() : '';
+    const dir = (req.query && req.query.dir) ? String(req.query.dir).trim() : 'desc';
+    const list = localLibrary.listLocalTracks(kw, sort, dir);
     res.json({ code: 200, data: { list, total: list.length } });
   } catch (e) {
     res.json({ code: 500, msg: '查询本地曲库失败: ' + e.message.slice(0, 120) });
@@ -358,15 +361,53 @@ router.post('/meta/update', (req, res) => {
     res.json({ code: 500, msg: '更新元数据失败: ' + e.message.slice(0, 120) });
   }
 });
-// ===== 在线元数据匹配（多线路：netease 主源 + kuwo/qq/kugou/itunes/deezer 补足 + MusicBrainz 风格/语言）=====
+// ===== 内嵌标签写回（比 music-tag-web 更强：全字段 + 封面 + 自动备份 + 索引联动）=====
+const tagEditor = require('../services/tagEditor');
+
+// 读取单曲音频文件当前内嵌标签（用于对比曲库索引、确认写回前现状）
+router.get('/tag/read', async (req, res) => {
+  try {
+    const { id } = req.query || {};
+    if (!id) return res.json({ code: 500, msg: '缺少歌曲ID' });
+    const data = await tagEditor.readTag(id);
+    res.json({ code: 200, data });
+  } catch (e) {
+    res.json({ code: 500, msg: '读取内嵌标签失败: ' + e.message.slice(0, 200) });
+  }
+});
+
+// 写回源文件内嵌标签：fields 为标签字段对象（title/artist/album/album_artist/year/track/disc/genre/
+// language/composer/lyricist/comment/bpm），cover 可选（封面图本地路径或 http(s) URL）
+// 写前自动备份原文件，写后自动重读 ffprobe 刷新曲库索引
+router.post('/tag/write', async (req, res) => {
+  try {
+    const { id, fields, cover } = req.body || {};
+    if (!id) return res.json({ code: 500, msg: '缺少歌曲ID' });
+    const data = await tagEditor.writeTag(id, fields || {}, cover);
+    res.json({ code: 200, msg: '已写入源文件内嵌标签，并刷新曲库索引', data });
+  } catch (e) {
+    res.json({ code: 500, msg: '写回内嵌标签失败: ' + e.message.slice(0, 200) });
+  }
+});
+
+// 查询写前备份情况（供回滚/提示）
+router.get('/tag/backup', async (req, res) => {
+  try {
+    const { id } = req.query || {};
+    if (!id) return res.json({ code: 500, msg: '缺少歌曲ID' });
+    const data = await tagEditor.backupInfo(id);
+    res.json({ code: 200, data });
+  } catch (e) {
+    res.json({ code: 500, msg: '查询备份失败: ' + e.message.slice(0, 120) });
+  }
+});
+// ===== 在线元数据匹配（多线路：netease 主源 + kuwo/qq/kugou/itunes 补足 + MusicBrainz 风格/语言）=====
 const MCOMBO_LABEL = { title: '仅歌名', title_artist: '歌名＋歌手', title_artist_album: '歌名＋歌手＋专辑' };
-// Deezer 流派 id → 名称（未命中映射时回退显示「流派#id」）
-const DEEZER_GENRE = { 0: '摇滚', 20: '另类', 85: '另类摇滚', 106: '嘻哈', 113: '舞曲', 116: '节奏布鲁斯', 129: '爵士', 132: '流行', 152: '电子', 153: '浩室', 165: '说唱', 174: '摇滚', 333: '金属', 464: '民谣', 473: '民谣', 541: '古典', 576: '配乐', 578: '原声', 849: '福音', 1523: '独立' };
 function mnorm (s) { return String(s || '').replace(/[\s·・.．,，、/()（）]/g, '').toLowerCase(); }
 
 router.post('/meta/match', async (req, res) => {
   try {
-    // source 可选：传 'netease'|'qq'|'kuwo'|'kugou'|'itunes'|'deezer' 时只收集该源；缺省聚合全部源
+    // source 可选：传 'netease'|'qq'|'kuwo'|'kugou'|'itunes' 时只收集该源；缺省聚合全部源
     const { id, combos, song, source } = req.body || {};
     const title = (song && song.name) || '';
     const artist = (song && song.artist) || '';
@@ -390,9 +431,9 @@ router.post('/meta/match', async (req, res) => {
         { name: 'qq', fn: () => qq.search(kw, 1, 15).then(x => x.records || []) },
         { name: 'kugou', fn: () => kugou.search(kw, 1, 15).then(x => x.records || []) },
         // 需求5：扩源 —— iTunes 官方曲库（时长/年份/流派/音轨号/发行国家俱齐）
-        { name: 'itunes', fn: async () => {
+        { name: 'itunes', fn: async (signal) => {
           const u = 'https://itunes.apple.com/search?media=music&entity=song&limit=25&term=' + encodeURIComponent(kw);
-          const r = await fetch(u);
+          const r = await fetch(u, { signal });
           const j = await r.json();
           return (j.results || []).map(it => ({
             musicName: it.trackName || '',
@@ -406,21 +447,6 @@ router.post('/meta/match', async (req, res) => {
             track: it.trackNumber != null ? String(it.trackNumber) : '',
             genre: it.primaryGenreName || '',
             country: it.country || ''
-          }));
-        } },
-        // 需求5：扩源 —— Deezer（作曲/作词等深字段需二次拉取）
-        { name: 'deezer', fn: async () => {
-          const u = 'https://api.deezer.com/search?limit=25&q=' + encodeURIComponent(kw);
-          const r = await fetch(u);
-          const j = await r.json();
-          return ((j && j.data) || []).map(dt => ({
-            musicName: dt.title || '',
-            musicArtist: (dt.artist && dt.artist.name) || '',
-            musicAlbum: (dt.album && dt.album.title) || '',
-            albumid: dt.album && dt.album.id != null ? String(dt.album.id) : '',
-            pic: (dt.album && (dt.album.cover_xl || dt.album.cover_big)) || '',
-            duration: dt.duration || 0,
-            _deezerTrackId: dt.id
           }));
         } }
       ];
@@ -438,10 +464,13 @@ router.post('/meta/match', async (req, res) => {
         if (/(伴奏|remix|live|ktv|翻唱|3d|环绕|纯音乐|instrumental|cover|混音|mix|串烧)/.test(n)) q -= 6;
         return q;
       };
-      for (const s of pool) {
+      // 多源并发收集（含超时保护）：国内源快速返回即推进，海外源 3s 无响应自动放弃（预留不可达源快速兜底）
+      const results = await Promise.allSettled(pool.map(async (s) => {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 3000);
         try {
-          const rows = await s.fn();
-          const rowsArr = rows.slice();
+          const rows = await s.fn(ctrl.signal);
+          const rowsArr = (rows || []).slice();
           // 排序：标题完全一致者优先；同档内按质量分降序（官方有封面版本靠前，劣质条目后置）
           rowsArr.sort((a, b) => {
             const aHit = mnorm(a.musicName || '') === titleNorm ? 0 : 1;
@@ -449,10 +478,22 @@ router.post('/meta/match', async (req, res) => {
             if (aHit !== bHit) return aHit - bHit;
             return qRank(b) - qRank(a);
           });
-          for (const r of rowsArr.slice(0, 8)) pushRow(r, s.name);
+          return { src: s.name, rows: rowsArr.slice(0, 8) };
         } catch (e) {
           console.warn('[meta/match] ' + s.name + ' 搜索失败: ' + e.message);
+          return { src: s.name, rows: [] };
+        } finally {
+          clearTimeout(timer);
         }
+      }));
+      // 聚合：netease 主源在前，其余源按声明顺序补足候选（保持原有优先级语义）
+      const primary = pool.findIndex(s => s.name === 'netease');
+      const ordered = pool.map((s, i) => ({ ...s, i }));
+      ordered.sort((a, b) => (a.name === 'netease' ? -1 : b.name === 'netease' ? 1 : a.i - b.i));
+      for (const os of ordered) {
+        const r = results[os.i];
+        const rows = r.status === 'fulfilled' ? r.value.rows : [];
+        for (const row of rows) pushRow(row, os.name);
         if (out.length >= 14) break;
       }
       return out;
@@ -467,6 +508,7 @@ router.post('/meta/match', async (req, res) => {
         albumArtist: r.albumArtist || r.albumSinger || '',
         year: (r.year != null && r.year !== '' ? String(r.year) : ''),
         track: (r.track != null && r.track !== '' ? String(r.track) : ''),
+        disc: (r.disc != null && r.disc !== '' ? String(r.disc) : ''),
         duration: r.duration || 0,
         genre: r.genre || '',
         language: r.language || '',
@@ -475,29 +517,7 @@ router.post('/meta/match', async (req, res) => {
         upc: r.upc || '',
         src: r._src || r.plugName || ''
       };
-      // deezer 深字段：并行补 作曲/作词(contributors) + 专辑详情(年份/流派/音轨号/UPC)
-      if (r._src === 'deezer' && r._deezerTrackId) {
-        try {
-          const [td, ad] = await Promise.all([
-            fetch('https://api.deezer.com/track/' + r._deezerTrackId).then(x => x.json()).catch(() => null),
-            r.albumid ? fetch('https://api.deezer.com/album/' + r.albumid).then(x => x.json()).catch(() => null) : Promise.resolve(null)
-          ]);
-          if (td && td.contributors) {
-            const co = td.contributors.composer, ly = td.contributors.lyricist;
-            if (co && !c.composer) c.composer = String(co.name || co);
-            if (ly && !c.lyricist) c.lyricist = String(ly.name || ly);
-          }
-          if (ad) {
-            if (!c.year && ad.release_date) c.year = String(ad.release_date).slice(0, 4);
-            if (!c.genre && ad.genre_id != null) c.genre = DEEZER_GENRE[ad.genre_id] || ('流派#' + ad.genre_id);
-            if (!c.track && ad.tracks && ad.tracks.data && ad.tracks.data.length) {
-              const cur = ad.tracks.data.find(t => String(t.id) === String(r._deezerTrackId));
-              if (cur && cur.track_position) c.track = String(cur.track_position);
-            }
-            if (ad.upc && !c.upc) c.upc = String(ad.upc);
-          }
-        } catch (e2) { /* deezer 补充失败忽略 */ }
-      }
+      // (deezer 源已摘除，其深字段补全逻辑随之移除)
       // netease 主源补充专辑详情：专辑艺人 / 年份 / 音轨号（优先只补缺失字段）
       if (r._src === 'netease' && r.albumid && (!c.year || !c.track || !c.albumArtist)) {
         try {
@@ -516,21 +536,44 @@ router.post('/meta/match', async (req, res) => {
       return c;
     }
 
+    // 候选深度字段并发补全（限 6 路并发，避免 12 候选全量并发打爆上游）
+    async function mapLimit (arr, limit, fn) {
+      const out = new Array(arr.length);
+      let idx = 0;
+      const workers = [];
+      for (let w = 0; w < Math.min(limit, arr.length); w++) {
+        workers.push((async () => {
+          while (idx < arr.length) {
+            const i = idx++;
+            out[i] = await fn(arr[i], i);
+          }
+        })());
+      }
+      await Promise.all(workers);
+      return out;
+    }
+
     const out = [];
-    for (const k of (combos || [])) {
+    // 先并发发起 MusicBrainz 请求（带 5s 超时），与下方 combos 收集并行推进
+    const mbPromise = Promise.race([
+      enrich.mbSuggest(title, artist).catch(() => null),
+      new Promise(res => setTimeout(() => res(null), 1200))
+    ]);
+    // combos 并行执行（各 combo 独立收集+补深），替代原先串行循环
+    const comboResults = await Promise.all((combos || []).map(async (k) => {
       let kw = title;
       if (k === 'title_artist' && artist) kw = title + ' ' + artist;
       else if (k === 'title_artist_album') kw = [title, artist, album].filter(Boolean).join(' ');
       const rows = await collectSources(kw, source);
-      const cands = [];
-      for (const r of rows.slice(0, 12)) cands.push(await toCand(r));
-      out.push({ key: k, label: MCOMBO_LABEL[k] || k, keyword: kw, candidates: cands });
-    }
+      const cands = await mapLimit(rows.slice(0, 12), 6, toCand);
+      return { key: k, label: MCOMBO_LABEL[k] || k, keyword: kw, candidates: cands };
+    }));
+    out.push(...comboResults);
 
     // MusicBrainz 补充：风格 / 语言
     let mb = {};
     try {
-      const m = await enrich.mbSuggest(title, artist);
+      const m = await mbPromise;
       if (m && m.ok && Array.isArray(m.fields)) {
         for (const f of m.fields) {
           if (f.name === 'genre' && f.value) mb.genre = f.value;
@@ -597,6 +640,73 @@ router.post('/tag/preview', (req, res) => {
   enrich.batchPreview(tracks, 3)
     .then(list => res.json({ code: 200, data: list }))
     .catch(e => res.json({ code: 500, msg: '生成建议失败: ' + e.message.slice(0, 120) }));
+});
+
+// ===== 全网搜索批量自动补全（缺年份 / 缺风格 / 缺语言）=====
+// 只识别不写盘：POST body { missing: 'year'|'genre'|'language', limit?: number }
+// 返回按 (artist,album) 聚合的建议清单，前端确认后再调 /tag/autofill/apply 写回
+router.post('/tag/autofill', async (req, res) => {
+  try {
+    const { missing, limit } = req.body || {};
+    const data = await enrich.webAutofill({ missing: String(missing || '').trim(), limit: parseInt(limit, 10) || 60 });
+    res.json({ code: 200, data, msg: `扫描到 ${data.totalGroups} 个专辑，已识别前 ${data.scannedGroups} 个` });
+  } catch (e) {
+    res.json({ code: 500, msg: '全网搜索补全识别失败: ' + e.message.slice(0, 120) });
+  }
+});
+
+// 应用批量补全：POST body { missing, groups: [{ ids: [id...], fields: {year|genre|language}, trackLangs?: [{id, language}] }] }
+// 逐曲写源文件（写前自动备份），返回成功/失败统计
+// trackLangs 为可选：语言补全时按「歌名+歌手」逐曲识别，每首写各自的 language，未列出的曲目回落 fields.language
+router.post('/tag/autofill/apply', async (req, res) => {
+  const tagEditor = require('../services/tagEditor');
+  const groups = (req.body && Array.isArray(req.body.groups)) ? req.body.groups : [];
+  if (!groups.length) return res.json({ code: 500, msg: '缺少待写入的专辑建议' });
+  let done = 0, fail = 0;
+  const failList = [];
+  for (const g of groups) {
+    const fields = g && typeof g.fields === 'object' ? g.fields : {};
+    const ids = (g && Array.isArray(g.ids)) ? g.ids : [];
+    const hasPerLang = g && Array.isArray(g.trackLangs);
+    const langById = new Map();
+    if (hasPerLang) {
+      for (const tl of g.trackLangs) {
+        const lang = tl && String(tl.language || '').trim();
+        if (lang) langById.set(String(tl.id), lang);
+      }
+    }
+    const hasPerGenre = g && Array.isArray(g.trackGenres);
+    const genreById = new Map();
+    if (hasPerGenre) {
+      for (const tg of g.trackGenres) {
+        const gn = tg && String(tg.genre || '').trim();
+        if (gn) genreById.set(String(tg.id), gn);
+      }
+    }
+    for (const id of ids) {
+      try {
+        let write = fields;
+        if (hasPerLang) {
+          const per = langById.get(String(id));
+          // 语言补全采用「歌名+歌手」逐曲识别：每首写各自语言；未成功识别的曲目不写语言，避免整张误写
+          write = per ? { ...fields, language: per } : { ...fields };
+          if (!per) delete write.language;
+        }
+        if (hasPerGenre) {
+          // 风格补全同样逐曲：每首写各自风格；未逐曲识别的曲目不覆盖（兜底整张主风格由 fields.genre 承担）
+          const gn = genreById.get(String(id));
+          if (gn) write = { ...write, genre: gn };
+          if (hasPerGenre && !gn) delete write.genre;
+        }
+        await tagEditor.writeTag(id, write, undefined);
+        done += 1;
+      } catch (e) {
+        fail += 1;
+        if (failList.length < 20) failList.push({ id, msg: String(e.message || e).slice(0, 80) });
+      }
+    }
+  }
+  res.json({ code: 200, msg: `补全完成：成功 ${done} 首，失败 ${fail} 首`, data: { done, fail, failList } });
 });
 
 // ===== 本地是否已有（为歌单 / 专辑 / 单曲 / 搜索结果标注"本地已有"徽标）=====
@@ -712,4 +822,52 @@ router.get('/meta/dups', (req, res) => {
   } catch (e) {
     return res.json({ code: 500, msg: '查重失败: ' + e.message.slice(0, 120) });
   }
+});
+
+// ===== 音频指纹智能去重（Chromaprint）=====
+// 状态：GET /fp/status
+router.get('/fp/status', (req, res) => {
+  try {
+    const st = fpDup.getStatus();
+    res.json({ code: 200, data: Object.assign({}, st, fpDup.stats()) });
+  } catch (e) { res.json({ code: 500, msg: '指纹状态读取失败: ' + e.message.slice(0, 120) }); }
+});
+
+// 开始/继续扫描：POST /fp/scan  body {dir?, limit?}（dir 用于试扫子目录，limit 限制条数）
+router.post('/fp/scan', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const dir = (typeof body.dir === 'string' && body.dir.trim()) ? body.dir.trim() : '';
+    const limit = parseInt(body.limit, 10) || 0;
+    const r = await fpDup.startScan({ dir, limit });
+    res.json(r);
+  } catch (e) { res.json({ code: 500, msg: '指纹扫描启动失败: ' + e.message.slice(0, 120) }); }
+});
+
+// 控制：POST /fp/ctrl  body {action: 'stop' | 'pause' | 'resume'}
+router.post('/fp/ctrl', (req, res) => {
+  try {
+    const action = (req.body && req.body.action) || '';
+    let r;
+    if (action === 'stop') r = fpDup.stopScan();
+    else if (action === 'pause') r = fpDup.setPaused(true);
+    else if (action === 'resume') r = fpDup.setPaused(false);
+    else r = { code: 500, msg: '未知控制动作: ' + action };
+    res.json(r);
+  } catch (e) { res.json({ code: 500, msg: '指纹控制失败: ' + e.message.slice(0, 120) }); }
+});
+
+// 清空指纹：DELETE /fp
+router.delete('/fp', (req, res) => {
+  try { res.json(fpDup.clearAll()); }
+  catch (e) { res.json({ code: 500, msg: '指纹清空失败: ' + e.message.slice(0, 120) }); }
+});
+
+// 比对：GET /fp/matches?ratio=0.5
+router.get('/fp/matches', (req, res) => {
+  try {
+    const ratio = parseFloat(req.query && req.query.ratio);
+    const r = fpDup.match(ratio);
+    res.json(r);
+  } catch (e) { res.json({ code: 500, msg: '指纹比对失败: ' + e.message.slice(0, 160) }); }
 });

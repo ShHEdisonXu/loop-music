@@ -116,11 +116,26 @@ CREATE TABLE IF NOT EXISTS local_track (
   norm_artist TEXT,
   norm_album TEXT,
   fingerprint TEXT,
-  updated_at TEXT
+  updated_at TEXT,
+  created_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_local_fp ON local_track(fingerprint);
 CREATE INDEX IF NOT EXISTS idx_local_title_artist ON local_track(norm_title, norm_artist);
 `);
+
+// local_track 增加 created_at（旧库迁移：缺列则 ALTER 增加，并以 updated_at 回填一次）
+(function migrateLocalCreatedAt() {
+  try {
+    const cols = db.prepare('PRAGMA table_info(local_track)').all().map(c => c.name);
+    if (!cols.includes('created_at')) {
+      db.exec('ALTER TABLE local_track ADD COLUMN created_at TEXT');
+      console.log('[db] local_track 增加列: created_at');
+    }
+    db.exec("UPDATE local_track SET created_at = updated_at WHERE created_at IS NULL OR created_at = ''");
+  } catch (e) {
+    console.warn('[db] local_track created_at 迁移失败：' + e.message);
+  }
+})();
 
 // 待处理重复项表（元数据识别命中，等待用户决定）
 // 记录「本地已有文件」与「待下载文件」双方对比信息
@@ -202,5 +217,18 @@ CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_dup(status);
     console.warn('[db] file_size 迁移失败：' + e.message);
   }
 })();
+
+// 音频指纹表（Chromaprint 智能去重）：local_track 每首的 fpcalc -raw 指纹
+// fp 存逗号分隔 raw int 序列；比对按 duration 桶 + int 倒排投票，识别同曲不同编码/不同压制
+db.exec(`
+CREATE TABLE IF NOT EXISTS audio_fp (
+  local_id INTEGER PRIMARY KEY,
+  file_path TEXT,
+  duration REAL DEFAULT 0,
+  fp TEXT,
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audio_fp_duration ON audio_fp(duration);
+`);
 
 module.exports = db;

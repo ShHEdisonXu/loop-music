@@ -1,11 +1,13 @@
 // Loop Music Player - Service Worker
+// v7：外壳缓存版本升级（v6 → v7），确保手机端 PWA 拉取到「下载音质统一由设置决定」的新构建产物；
+//      缓存策略与 v6 一致：只接管应用外壳（导航 HTML / 构建产物 / 图标）。
 // v6：外壳缓存版本升级（v5 → v6），确保手机端 PWA 能拉取到含「音质回落原因提示」的新构建产物；
 //      缓存策略与 v5 一致：只接管应用外壳（导航 HTML / 构建产物 / 图标）。
 // v5：只接管「应用外壳」（导航 HTML / 构建产物 / 图标）。
 // 关键修复：/api/ 一律不进 SW —— 此前把音频流(/api/library/audio)、封面(/api/library/meta/cover)
 // 与每秒轮询接口的响应全部 clone + cache.put，导致 SW 内缓冲大响应、Cache Storage 写入风暴，
 // 手机上快速切换页面即卡死白屏。接口与媒体现在全部交还浏览器原生处理。
-const CACHE_NAME = 'loop-pwa-v6';
+const CACHE_NAME = 'loop-pwa-v7';
 const STATIC_ASSETS = [
   '/',
   '/?home',

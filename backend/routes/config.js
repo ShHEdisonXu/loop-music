@@ -42,8 +42,12 @@ router.post('/isLogin', (req, res) => {
   res.json({ code: 200, msg: '已登录' });
 });
 
-// 获取全部设置
+// 获取全部设置（动态回填运行时生效值，避免模块加载时的静态快照过期）
 router.get('/getConfigList', (req, res) => {
+  const br = defaultConfigs.find(c => c.configKey === 'system.download.brType');
+  if (br) br.configValue = config.defaultBrType;
+  const dp = defaultConfigs.find(c => c.configKey === 'system.download.path');
+  if (dp) dp.configValue = config.musicRoot;
   res.json({ code: 200, data: defaultConfigs, msg: 'success' });
 });
 
@@ -82,7 +86,8 @@ router.post('/updateConfig', (req, res) => {
 
   item.configValue = configValue;
   if (configKey === 'system.download.file.audio.format') config.downloadFormat = configValue;
-  if (configKey === 'system.download.brType') config.defaultBrType = configValue;
+  // 默认下载音质：持久化到 settings.json，重启后仍生效；所有下载入口（搜索/歌单/专辑/喜欢/最近/播放条）统一取该值
+  if (configKey === 'system.download.brType') settings.set('defaultBrType', configValue);
   if (configKey === 'system.download.maxConcurrent') config.maxConcurrent = parseInt(configValue) || 3;
   res.json({ code: 200, msg: '修改成功' });
 });

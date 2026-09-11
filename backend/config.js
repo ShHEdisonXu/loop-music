@@ -46,7 +46,10 @@ module.exports = {
   // 默认音质等级（api-enhanced 支持：standard/higher/exhigh/lossless/hires/jyeffect/sky/vivid/jymaster；
   // jyeffect=高清环绕声, sky=沉浸环绕声, vivid=臻音全景声, jymaster=超清母带（最高档）；
   // 非网易云源不识别上述高阶档位，下载链路会自动归一降级到 lossless/hires）
-  defaultBrType: process.env.DEFAULT_BR_TYPE || 'lossless',
+  // 取值优先级：settings.json（「设置」页保存，持久化） > 环境变量 > 内置默认
+  get defaultBrType() {
+    return settings.get('defaultBrType') || process.env.DEFAULT_BR_TYPE || 'lossless';
+  },
 
   // 数据库文件
   dbFile: path.join(__dirname, 'data', 'download.db'),

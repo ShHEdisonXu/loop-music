@@ -708,7 +708,7 @@ function bitRateScore(bps) {
 }
 // 待下载音质档位分（无实测码率时按 brType 估算）
 function brTypeScore(br) {
-  const map = { jymaster: 100, hires: 100, lossless: 90, exhigh: 74, higher: 62, high: 62, standard: 42 };
+  const map = { jymaster: 100, vivid: 100, sky: 100, jyeffect: 100, hires: 100, lossless: 90, exhigh: 74, higher: 62, high: 62, standard: 42 };
   return map[br] ?? 50;
 }
 // 文件大小分（MB，0-100）
@@ -726,7 +726,7 @@ function sizeScore(bytes) {
 // 综合质量分（0-100）：有实测大小时大小为主权重（60%），其次 格式25%+码率15%；
 // 无实测大小（如付费/无版权项）时退化为 格式55%+码率45%，避免大小缺失干扰决策
 function qualityScore({ format, bitRate, brType, size }) {
-  const fmt = formatScore(format || (brType ? (['lossless', 'hires', 'jymaster'].includes(brType) ? 'flac' : 'mp3') : ''));
+  const fmt = formatScore(format || (brType ? (['lossless', 'hires', 'jymaster', 'jyeffect', 'sky', 'vivid'].includes(brType) ? 'flac' : 'mp3') : ''));
   const br = bitRate && bitRate > 0 ? bitRateScore(bitRate) : (brType ? brTypeScore(brType) : 0);
   const sz = sizeScore(size);
   if (sz > 0) return Math.round(sz * 0.6 + fmt * 0.25 + br * 0.15);

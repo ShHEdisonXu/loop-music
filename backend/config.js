@@ -43,8 +43,9 @@ module.exports = {
   // 下载格式：flac / mp3
   downloadFormat: process.env.DOWNLOAD_FORMAT || 'flac',
 
-  // 默认音质等级（api-enhanced 支持：standard/higher/exhigh/lossless/hires/jymaster；
-  // jymaster=超清母带，仅网易云有母带权益的歌曲可取链，需下载链路支持 flac 输出）
+  // 默认音质等级（api-enhanced 支持：standard/higher/exhigh/lossless/hires/jyeffect/sky/vivid/jymaster；
+  // jyeffect=高清环绕声, sky=沉浸环绕声, vivid=臻音全景声, jymaster=超清母带（最高档）；
+  // 非网易云源不识别上述高阶档位，下载链路会自动归一降级到 lossless/hires）
   defaultBrType: process.env.DEFAULT_BR_TYPE || 'lossless',
 
   // 数据库文件

@@ -21,7 +21,7 @@ async function gdRequest(params) {
 // 音质名 → GD 码率
 function brToKbps(brType) {
   const b = String(brType || '').toLowerCase();
-  if (b === 'lossless' || b === 'hires' || b === 'jymaster') return 320;
+  if (b === 'lossless' || b === 'hires' || b === 'jymaster' || b === 'jyeffect' || b === 'sky' || b === 'vivid') return 320;
   if (b === 'exhigh' || b === 'higher') return 192;
   return 128;
 }

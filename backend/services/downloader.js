@@ -162,7 +162,7 @@ async function resolveFallbackSource(task, exclude = []) {
   if (!keyword) return [];
   // 三要素匹配目标：仅采用 歌名+歌手+专辑 均一致的候选，拒绝翻唱/翻版/伴奏等
   const want = { name: task.music_name, artist: task.artist_name, album: task.album_name };
-  const brMap = { jymaster: '320kmp3', lossless: '320kmp3', higher: '320kmp3', exhigh: '320kmp3', standard: '128kmp3' };
+  const brMap = { jymaster: '320kmp3', vivid: '320kmp3', sky: '320kmp3', jyeffect: '320kmp3', lossless: '320kmp3', higher: '320kmp3', exhigh: '320kmp3', standard: '128kmp3' };
   const hits = [];
 
   // Kuwo：搜索取候选（匹配度降序前 5 个 rid），逐个取直链，收集全部非空 url
@@ -177,7 +177,7 @@ async function resolveFallbackSource(task, exclude = []) {
         .slice(0, 5);
       for (const hit of recs) {
         const br = brMap[task.br_type] || '320kmp3';
-        const fmt = ['jymaster', 'lossless', 'higher', 'exhigh'].includes(task.br_type) ? 'flac' : 'mp3';
+        const fmt = ['jymaster', 'jyeffect', 'sky', 'vivid', 'lossless', 'higher', 'exhigh'].includes(task.br_type) ? 'flac' : 'mp3';
         let u = await kuwo.getPlayUrl(hit.rid, fmt, br);
         if (!u) u = await kuwo.getPlayUrl(hit.rid, 'mp3', '128kmp3');
         if (u) hits.push({ url: u, source: 'kuwo', name: hit.musicName, artist: hit.musicArtists });
@@ -389,10 +389,10 @@ async function doDownload(taskId) {
     } else if (plug === 'kuwo') {
       const kuwo = require('./kuwo');
       // 酷我完整版直链必须带 br（128kmp3/192kmp3/320kmp3）；不带 br 只返回 11 秒试听
-      const brMap = { jymaster: '320kmp3', lossless: '320kmp3', higher: '320kmp3', exhigh: '320kmp3', standard: '128kmp3' };
+      const brMap = { jymaster: '320kmp3', vivid: '320kmp3', sky: '320kmp3', jyeffect: '320kmp3', lossless: '320kmp3', higher: '320kmp3', exhigh: '320kmp3', standard: '128kmp3' };
       const br = brMap[task.br_type] || '320kmp3';
       // 母带为非网易云专有档位，酷我按最高规格取 FLAC
-      const fmt = ['jymaster', 'lossless', 'higher', 'exhigh'].includes(task.br_type) ? 'flac' : 'mp3';
+      const fmt = ['jymaster', 'jyeffect', 'sky', 'vivid', 'lossless', 'higher', 'exhigh'].includes(task.br_type) ? 'flac' : 'mp3';
       let u = await kuwo.getPlayUrl(task.song_id, fmt, br);
       if (!u && br !== '128kmp3') {
         u = await kuwo.getPlayUrl(task.song_id, 'mp3', '128kmp3');
@@ -405,8 +405,8 @@ async function doDownload(taskId) {
     } else if (task.external) {
       // 外部自定义后端：按配置的协议+地址走 external 适配器取链
       const external = require('./external');
-      // 母带档位为网易云专有，外部后端不认识 → 归一为 lossless 再走降级链
-      const extBr = String(task.br_type || '').toLowerCase() === 'jymaster' ? 'lossless' : task.br_type;
+      // 母带/空间音频档位为网易云专有，外部后端不认识 → 归一为 lossless 再走降级链
+      const extBr = ['jymaster', 'jyeffect', 'sky', 'vivid'].includes(String(task.br_type || '').toLowerCase()) ? 'lossless' : task.br_type;
       const brChain = [extBr, 'higher', 'standard'].filter(Boolean);
       for (const br of brChain) {
         const u = await external.externalGetUrl({
@@ -423,11 +423,11 @@ async function doDownload(taskId) {
         return;
       }
     } else {
-      // 网易云：按音质降级链逐级取原音源直链（jymaster 超清母带 → hires → lossless → exhigh → higher → standard）；
+      // 网易云：按音质降级链逐级取原音源直链（jymaster 超清母带 → vivid 臻音全景声 → sky 沉浸环绕声 → jyeffect 高清环绕声 → hires → lossless → exhigh → higher → standard）；
       // 全链失败再走多音源兜底解锁灰色/VIP 歌
-      const ncmChain = ['jymaster', 'hires', 'lossless', 'exhigh', 'higher', 'standard'];
+      const ncmChain = ['jymaster', 'vivid', 'sky', 'jyeffect', 'hires', 'lossless', 'exhigh', 'higher', 'standard'];
       let ncmStart = ncmChain.indexOf(String(task.br_type || '').toLowerCase());
-      if (ncmStart === -1) ncmStart = 2; // 未指定或非法音质时从 lossless 开始
+      if (ncmStart === -1) ncmStart = 5; // 未指定或非法音质时从 lossless 开始
       for (let i = ncmStart; i < ncmChain.length; i++) {
         const u = await netease.getSongUrl(task.song_id, ncmChain[i]);
         if (u && u.url) { urlInfo = u; break; }

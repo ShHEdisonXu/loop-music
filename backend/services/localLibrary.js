@@ -562,8 +562,8 @@ function metaUpdate(id, fields = {}) {
   return { ok: true, track: rowToTrack(fresh) };
 }
 
-// 元数据识别：严格匹配（歌名 + 歌手 + 专辑）
-// 若本地或待下载的专辑名缺失，退化为 歌名 + 歌手 匹配，避免漏判
+// 元数据识别：严格匹配（歌名 + 歌手 + 专辑，三者必须全部命中）
+// 任一字段缺失（本地索引缺标签，或待下载缺专辑名）一律视为未命中，不做任何放宽
 function matchByMetadata(song) {
   const title = song.musicName || '';
   const artist = song.artistName || '';
@@ -571,18 +571,10 @@ function matchByMetadata(song) {
   const nTitle = normalize(title);
   const nArtist = normalize(artist);
   const nAlbum = normalize(album);
-  if (!nTitle || !nArtist) return null;
+  if (!nTitle || !nArtist || !nAlbum) return null;
 
-  if (nAlbum) {
-    // 严格：三字段全等
-    const strict = db.prepare('SELECT * FROM local_track WHERE fingerprint = ? LIMIT 1').get(fingerprint(title, artist, album));
-    if (strict) return strict;
-    // 严格模式下专辑不同不判重（允许同名不同专辑重复收集）
-    return null;
-  }
-  // 待下载缺专辑名 → 退化 歌名+歌手
-  const relaxed = db.prepare('SELECT * FROM local_track WHERE norm_title = ? AND norm_artist = ? LIMIT 1').get(nTitle, nArtist);
-  return relaxed || null;
+  // 严格：三字段规范化后全等（本地缺专辑的行指纹专辑位为空，不会误命中）
+  return db.prepare('SELECT * FROM local_track WHERE fingerprint = ? LIMIT 1').get(fingerprint(title, artist, album)) || null;
 }
 
 // 下载成功后增量写入本地曲库（P1-2 修复：duration 用 ffprobe 真实时长，不再硬编码 0）
@@ -906,32 +898,29 @@ function extractCoverById (id) {
 // 与入参逐条对齐，未命中返回 null；命中返回 { exists,filePath,fileSize,format,... }
 // 本地匹配表内存缓存（60s TTL）：原实现每次调用都全表扫 1.3 万行，前端秒级并发多次直接拖垮响应（手机端 499 卡顿根因）
 const MATCH_CACHE_TTL = 60 * 1000;
-let _matchCache = { at: 0, strict: null, relaxed: null };
+let _matchCache = { at: 0, strict: null };
 function getMatchMaps () {
   const now = Date.now();
   if (_matchCache.strict && now - _matchCache.at < MATCH_CACHE_TTL) return _matchCache;
   const rows = db.prepare('SELECT * FROM local_track').all();
   const strict = new Map();
-  const relaxed = new Map();
   for (const r of rows) {
     const k1 = fingerprint(r.title || '', r.artist || '', r.album || '');
     if (!strict.has(k1)) strict.set(k1, r);
-    const k2 = (r.norm_title || normalize(r.title || '')) + '\u0001' + normalize(r.artist || '');
-    if (!relaxed.has(k2)) relaxed.set(k2, r);
   }
-  _matchCache = { at: now, strict, relaxed, count: rows.length };
+  _matchCache = { at: now, strict, count: rows.length };
   return _matchCache;
 }
 
 function matchLocalExists(tracks = []) {
-  const { strict, relaxed } = getMatchMaps();
+  const { strict } = getMatchMaps();
   return (tracks || []).map((t) => {
     const title = t && (t.title || t.musicName);
     const artist = t && (t.artist || t.musicArtists || t.artistName);
     const album = t && (t.album || t.musicAlbum || t.albumName);
+    // 严格：歌名 + 歌手 + 专辑 三者必须全部命中，任一缺失或不同一律视为本地没有
     let hit = null;
     if (title && artist && album) hit = strict.get(fingerprint(title, artist, album)) || null;
-    if (!hit && title && artist) hit = relaxed.get(normalize(title) + '\u0001' + normalize(artist)) || null;
     if (!hit) return null;
     const fp = hit.file_path || '';
     return {

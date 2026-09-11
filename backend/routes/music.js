@@ -86,10 +86,10 @@ router.post('/getDownloadUrl', async (req, res) => {
   try {
     const { id, brType } = req.body || {};
     if (!id) return res.json({ code: 500, msg: '缺少歌曲ID' });
-    // 降级链：hires > lossless > exhigh > higher > standard
-    const brChain = ['hires', 'lossless', 'exhigh', 'higher', 'standard'];
+    // 降级链：jymaster(超清母带) > hires > lossless > exhigh > higher > standard
+    const brChain = ['jymaster', 'hires', 'lossless', 'exhigh', 'higher', 'standard'];
     let startIdx = brChain.indexOf(String(brType || '').toLowerCase());
-    if (startIdx === -1) startIdx = 1; // 未指定或非法音质时从 lossless 开始
+    if (startIdx === -1) startIdx = 2; // 未指定或非法音质时从 lossless 开始
     let urlInfo = null;
     for (let i = startIdx; i < brChain.length; i++) {
       urlInfo = await netease.getSongUrl(id, brChain[i]);
@@ -678,7 +678,7 @@ router.post('/play', async (req, res) => {
     const probeMode = probe === true || probe === 'true' || probe === 1;
     const kw = [name, artist && artist !== '未知' ? artist : ''].filter(Boolean).join(' ').trim();
     const refSec = (parseInt(duration, 10) || 0) / 1000;
-    const brChain = ['hires', 'lossless', 'exhigh', 'higher', 'standard'];
+    const brChain = ['jymaster', 'hires', 'lossless', 'exhigh', 'higher', 'standard'];
     const br = String(brType || '').toLowerCase();
 
     // 单源探测（probe=true / force=true 共用）：返回 { source, ok, preview }
@@ -695,7 +695,7 @@ router.post('/play', async (req, res) => {
           }
           if (nid) {
             let startIdx = brChain.indexOf(br);
-            if (startIdx === -1) startIdx = 1;
+            if (startIdx === -1) startIdx = 2;
             for (let i = startIdx; i < brChain.length; i++) {
               const u = await netease.getSongUrl(nid, brChain[i]);
               if (u && u.url) {
@@ -774,7 +774,7 @@ router.post('/play', async (req, res) => {
 
     const neteaseUrl = async (songId) => {
       let startIdx = brChain.indexOf(br);
-      if (startIdx === -1) startIdx = 1;
+      if (startIdx === -1) startIdx = 2;
       for (let i = startIdx; i < brChain.length; i++) {
         const u = await netease.getSongUrl(songId, brChain[i]);
         if (u && u.url) return { url: u.url, br: brChain[i], size: u.size || await probeUrlSize(u.url), source: 'netease' };

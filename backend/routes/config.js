@@ -15,7 +15,7 @@ const defaultConfigs = [
   { configKey: 'system.download.file.audio.format', configValue: config.downloadFormat, configName: '下载格式', configType: 'select', configOption: 'flac,mp3' },
   { configKey: 'system.show.play.url', configValue: 'false', configName: '显示播放按钮', configType: 'switch' },
   { configKey: 'system.download.path', configValue: config.musicRoot, configName: '下载目录', configType: 'text' },
-  { configKey: 'system.download.brType', configValue: config.defaultBrType, configName: '默认音质', configType: 'select', configOption: 'standard,higher,exhigh,lossless,hires' },
+  { configKey: 'system.download.brType', configValue: config.defaultBrType, configName: '默认下载音质', configType: 'select', configOption: 'standard,higher,exhigh,lossless,hires,jymaster' },
   { configKey: 'system.download.maxConcurrent', configValue: String(config.maxConcurrent), configName: '并发下载数', configType: 'number' },
   { configKey: 'system.auth.token', configValue: config.authToken, configName: '访问口令', configType: 'text' }
 ];

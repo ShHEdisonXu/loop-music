@@ -43,7 +43,8 @@ module.exports = {
   // 下载格式：flac / mp3
   downloadFormat: process.env.DOWNLOAD_FORMAT || 'flac',
 
-  // 默认音质等级（api-enhanced 支持：standard/higher/exhigh/lossless/hires）
+  // 默认音质等级（api-enhanced 支持：standard/higher/exhigh/lossless/hires/jymaster；
+  // jymaster=超清母带，仅网易云有母带权益的歌曲可取链，需下载链路支持 flac 输出）
   defaultBrType: process.env.DEFAULT_BR_TYPE || 'lossless',
 
   // 数据库文件

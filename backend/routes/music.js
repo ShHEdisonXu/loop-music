@@ -671,11 +671,52 @@ function isFragment(url, size, durationSec, refSec) {
   return size > 0 && size < FRAGMENT_BYTES;
 }
 
+// ===================== /play 取链结果缓存 =====================
+// 取链最慢的路径是「按歌名+歌手跨源搜索兜底」，串行探测可达 6~20s；
+// 移动端（iOS Safari）等待过久会导致用户激活过期、play() 被拒 → 表现为「点歌没反应」。
+// 这里对成功且为完整版的取链结果做短时缓存（直链有效期约 20 分钟，5 分钟缓存安全），重复点播直接命中。
+const PLAY_CACHE = new Map();
+const PLAY_CACHE_TTL = 5 * 60 * 1000;
+const PLAY_CACHE_MAX = 300;
+function playCacheKey (b) {
+  return [b.source || '', b.id || '', b.songmid || '', b.rid || '', b.hash || '',
+    b.name || '', b.artist || '', b.brType || '', b.force ? 1 : 0].join('|');
+}
+function playCacheGet (k) {
+  const v = PLAY_CACHE.get(k);
+  if (!v) return null;
+  if (Date.now() - v.ts > PLAY_CACHE_TTL) { PLAY_CACHE.delete(k); return null; }
+  return v.data;
+}
+function playCacheSet (k, data) {
+  if (PLAY_CACHE.size >= PLAY_CACHE_MAX) {
+    const first = PLAY_CACHE.keys().next().value;
+    if (first !== undefined) PLAY_CACHE.delete(first);
+  }
+  PLAY_CACHE.set(k, { ts: Date.now(), data });
+}
+
 router.post('/play', async (req, res) => {
   try {
     const { source, id, rid, songmid, hash, albumId, name, artist, brType, duration, force, probe } = req.body || {};
     const forceMode = force === true || force === 'true' || force === 1;
     const probeMode = probe === true || probe === 'true' || probe === 1;
+
+    // 命中缓存直接返回（probe 探测不缓存，force/普通取链均缓存）
+    const cacheKey = probeMode ? '' : playCacheKey(req.body || {});
+    if (cacheKey) {
+      const cached = playCacheGet(cacheKey);
+      if (cached) return res.json(cached);
+      // 只缓存「完整版」成功结果：试听片段不缓存，避免用户重试仍拿到试听
+      const rawJson = res.json.bind(res);
+      res.json = (payload) => {
+        try {
+          const d = payload && payload.data;
+          if (payload && payload.code === 200 && d && d.url && d.preview !== true) playCacheSet(cacheKey, payload);
+        } catch (e) { /* 缓存写入失败不影响响应 */ }
+        return rawJson(payload);
+      };
+    }
     const kw = [name, artist && artist !== '未知' ? artist : ''].filter(Boolean).join(' ').trim();
     const refSec = (parseInt(duration, 10) || 0) / 1000;
     const brChain = ['jymaster', 'vivid', 'sky', 'jyeffect', 'hires', 'lossless', 'exhigh', 'higher', 'standard'];

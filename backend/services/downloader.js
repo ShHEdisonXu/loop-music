@@ -358,6 +358,16 @@ async function writeMetadata(inputPath, outputPath, meta, coverPath) {
   await execFileAsync('ffmpeg', args, { timeout: 180000 });
 }
 
+// 音质档位中文名（用于把"请求档位 vs 实际档位"的回落原因写进任务消息，供前端展示）
+const BR_LEVEL_NAMES = {
+  standard: '标准', higher: '较高', exhigh: '极高', lossless: '无损', hires: 'Hi-Res',
+  jyeffect: '高清环绕声', sky: '沉浸环绕声', vivid: '臻音全景声', jymaster: '超清母带'
+};
+function brLevelName(level) {
+  const k = String(level || '').toLowerCase();
+  return BR_LEVEL_NAMES[k] || k || '';
+}
+
 // 执行单个下载任务
 async function doDownload(taskId) {
   const task = db.prepare('SELECT * FROM download_task WHERE id = ?').get(taskId);
@@ -370,6 +380,7 @@ async function doDownload(taskId) {
   const fileExt = config.downloadFormat || 'flac';
   let tmpAudio = null;
   let fallbackQueue = [];   // 多音源兜底候选队列（取链失败时预拉，下载阶段逐个校验）
+  let qualityNote = '';     // 音质回落/换源说明（下载成功时写入任务消息，供前端展示原因）
   let pendingBackup = null;      // P1-3 pending 强制重下旧文件备份（函数级，供 catch 回滚）
   let pendingRollbackTo = null;  // P1-3 备份对应的原目标路径
   try {
@@ -426,11 +437,24 @@ async function doDownload(taskId) {
       // 网易云：按音质降级链逐级取原音源直链（jymaster 超清母带 → vivid 臻音全景声 → sky 沉浸环绕声 → jyeffect 高清环绕声 → hires → lossless → exhigh → higher → standard）；
       // 全链失败再走多音源兜底解锁灰色/VIP 歌
       const ncmChain = ['jymaster', 'vivid', 'sky', 'jyeffect', 'hires', 'lossless', 'exhigh', 'higher', 'standard'];
-      let ncmStart = ncmChain.indexOf(String(task.br_type || '').toLowerCase());
+      const reqLevel = String(task.br_type || '').toLowerCase();
+      let ncmStart = ncmChain.indexOf(reqLevel);
       if (ncmStart === -1) ncmStart = 5; // 未指定或非法音质时从 lossless 开始
+      let gotLevel = '';
       for (let i = ncmStart; i < ncmChain.length; i++) {
         const u = await netease.getSongUrl(task.song_id, ncmChain[i]);
-        if (u && u.url) { urlInfo = u; break; }
+        if (u && u.url) { urlInfo = u; gotLevel = String(u.level || ncmChain[i]).toLowerCase(); break; }
+      }
+      // 网易云按账号权益/版权会把请求档位静默回落到更低档位（HTTP 仍 200、level 字段如实标注），
+      // 这里对比"实际返回档位"与"请求档位"，回落时写明原因，避免 UI 显示与实际不符。
+      if (urlInfo && urlInfo.url) {
+        const gi = ncmChain.indexOf(gotLevel);
+        const ri = ncmChain.indexOf(reqLevel);
+        if (gotLevel && reqLevel && gotLevel !== reqLevel && gi !== -1 && ri !== -1 && gi > ri) {
+          qualityNote = `音质已降级：请求「${brLevelName(reqLevel)}」，实际获取「${brLevelName(gotLevel)}」（网易云按账号权益/版权自动回落）`;
+        } else if (gotLevel && reqLevel && gotLevel !== reqLevel) {
+          qualityNote = `音质已调整：请求「${brLevelName(reqLevel)}」，实际「${brLevelName(gotLevel)}」`;
+        }
       }
       if (!urlInfo || !urlInfo.url) {
         // 多音源兜底：网易云无版权/VIP 取不到链时，按歌名+歌手换 Kuwo/Kugou/joox 取链（候选列表）
@@ -438,6 +462,7 @@ async function doDownload(taskId) {
         if (alts && alts.length && alts[0] && alts[0].url) {
           fallbackQueue.push(...alts.slice(1));
           urlInfo = { url: alts[0].url, source: alts[0].source };
+          qualityNote = `网易云无版权/受版权限制，已切换 ${alts[0].source} 音源兜底（实际音质以该音源为准）`;
           updateTask(taskId, 'loading', `网易云无版权，已切换${alts[0].source}音源兜底`);
         } else {
           await failTask(taskId, task, '404 未找到（可能需要VIP或源已下架）');
@@ -543,6 +568,10 @@ async function doDownload(taskId) {
         await assertNotPreview(tmpAudio);
         done = true;
         urlInfo = cand;
+        // 首个音源仅返回试听片段、最终由其他音源兜底成功时，同样写明换源原因
+        if (cand.source && cand.source !== 'netease') {
+          qualityNote = `当前音源仅试听，已切换 ${cand.source} 音源兜底（实际音质以该音源为准）`;
+        }
         break;
       } catch (e) {
         lastErr = e;
@@ -661,7 +690,7 @@ async function doDownload(taskId) {
       .run(task.song_id, task.br_type, filePath, song.musicName, song.artistName, song.albumName, new Date().toISOString());
     localLibrary.recordDownloaded(song, filePath);
 
-    updateTask(taskId, 'success', '下载完成', filePath);
+    updateTask(taskId, 'success', qualityNote ? `下载完成（${qualityNote}）` : '下载完成', filePath);
   } catch (e) {
     console.error(`任务 ${taskId} 下载失败:`, e.message);
     // 清理下载过程中产生的临时文件（含试听/不完整文件），防止坏文件残留

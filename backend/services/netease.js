@@ -463,7 +463,8 @@ async function getSongUrl(id, brType = 'lossless') {
     url: item.url,
     br: item.br || 0,
     size: item.size || 0,
-    type: item.type || ''
+    type: item.type || '',
+    level: item.level || ''
   };
 }
 

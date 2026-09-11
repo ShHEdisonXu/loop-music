@@ -26,9 +26,9 @@ COPY --from=ncmapi /app /app/ncm-api
 # ncm-api 内清理构建缓存/日志/示例数据，进一步减小镜像体积
 RUN rm -rf /app/ncm-api/.cache /app/ncm-api/tmp /app/ncm-api/logs 2>/dev/null || true
 
-# ---- 前端 ----
+# ---- 前端（产物源固定为 frontend/dist，勿再改回 frontend/ 顶层：顶层为历史遗留产物）----
 RUN rm -rf /usr/share/nginx/html/*
-COPY frontend/ /usr/share/nginx/html/
+COPY frontend/dist/ /usr/share/nginx/html/
 RUN chmod -R a+rX /usr/share/nginx/html
 
 # ---- nginx 配置：/api 代理到容器内 127.0.0.1:3001 ----

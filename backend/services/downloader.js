@@ -82,8 +82,13 @@ function updateTask(id, status, msg = '', filePath = null) {
 }
 
 // 下载文件（流式，带断流保护）
+// 注意：resp.data 只能有一个数据消费者（pipe）；额外用 on('data') 只做计数监听，不可再手动 read()，
+// 否则双消费者会导致 CDN 侧连接异常中断（aborted）。
 async function downloadFile(url, destPath) {
-  const resp = await axios.get(url, { responseType: 'stream', timeout: 90000, maxRedirects: 5 });
+  const resp = await axios.get(url, {
+    responseType: 'stream', timeout: 90000, maxRedirects: 5,
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+  });
   const total = parseInt(resp.headers['content-length'] || '0', 10);
   const writer = fs.createWriteStream(destPath);
   return new Promise((resolve, reject) => {
@@ -112,12 +117,51 @@ async function probeDuration(filePath) {
   } catch (e) { return null; }
 }
 
-// 试听/截断检测：网易云未登录 VIP/付费歌返回 30 秒试听、酷我/QQ 返回 10~30 秒试听，
-// 统一以 <45 秒拦截（正常完整歌曲极少短于此），防止坏文件污染曲库。
-// 若出现误杀极短合法音轨，可在此下调阈值。
-async function assertNotPreview(tmpAudio) {
+// 平台标注时长缓存：song_id -> 秒（或 null）
+const platformDurCache = new Map();
+
+// 获取歌曲在所选音源平台上的标注时长（秒）。拿不到返回 null，不影响下载。
+// 目的：影视 BGM/音效/插曲等"真实短曲"（如 20~45s）在平台上标注时长本身就短，
+// 与"付费试听截断"（平台标注 2~5 分钟、仅下到 10~34s）需用标注时长区分。
+async function getPlatformDuration(task) {
+  const sid = String((task && task.song_id) || '');
+  if (!sid) return null;
+  if (platformDurCache.has(sid)) return platformDurCache.get(sid);
+  let durSec = null;
+  try {
+    const plug = String(task.plug_name || '').toLowerCase();
+    if (plug === 'kuwo') {
+      const kuwo = require('./kuwo');
+      const { list } = await kuwo.rawSearch(task.music_name || '', 0, 30);
+      for (const s of (list || [])) {
+        if (String(s.MUSICRID || s.ID || '') === sid) {
+          durSec = parseInt(s.DURATION || 0, 10) || null;
+          break;
+        }
+      }
+    } else if (plug === 'netease') {
+      const r = await netease.searchSong(task.music_name || '', 30, 1);
+      for (const rec of ((r && r.records) || [])) {
+        if (String(rec.id) === sid) {
+          durSec = Math.round((rec.musicDuration || 0) / 1000) || null;
+          break;
+        }
+      }
+    }
+  } catch (e) { durSec = null; }
+  platformDurCache.set(sid, durSec);
+  return durSec;
+}
+
+// 试听/截断检测：网易云未登录 VIP/付费歌返回 30 秒试听、酷我/QQ 返回 10~30 秒试听。
+// 判定原则（防误杀真实短曲，如 20~45s 的影视 BGM/插曲）：
+//   - 已知平台标注时长且下载时长与其基本一致（>= 平台标注的 60%）→ 视为完整短曲，放行
+//   - 否则下载时长 <45s → 判定为试听片段拦截
+async function assertNotPreview(tmpAudio, platformDurationSec = null) {
   const dur = await probeDuration(tmpAudio);
-  if (dur !== null && dur < 45) {
+  if (dur === null) return;
+  const isShortTrack = platformDurationSec && platformDurationSec > 0 && dur >= platformDurationSec * 0.6;
+  if (dur < 45 && !isShortTrack) {
     const e = new Error(`仅获取到约${Math.round(dur)}秒试听片段（该曲目可能为付费/版权受限，请切换音源或使用聚合源）`);
     e.preview = true;
     throw e;
@@ -552,6 +596,8 @@ async function doDownload(taskId) {
     // 逐个候选下载并校验完整时长（>45s），试听则换下一个候选，直到拿到完整音频。
     const triedSources = new Set(urlInfo && urlInfo.source ? [urlInfo.source] : []);
     let dlQueue = [{ url: urlInfo.url, source: urlInfo.source || 'netease' }];
+    // 平台标注时长（用于区分真实短曲与被截断的试听片段）；拿不到返回 null，不影响下载
+    const platformDurationSec = await getPlatformDuration(task);
     if (fallbackQueue.length) dlQueue.push(...fallbackQueue);
     let done = false;
     let lastErr = null;
@@ -565,7 +611,7 @@ async function doDownload(taskId) {
       try {
         try { fs.unlinkSync(tmpAudio); } catch (_) {}
         await downloadFile(cand.url, tmpAudio);
-        await assertNotPreview(tmpAudio);
+        await assertNotPreview(tmpAudio, platformDurationSec);
         done = true;
         urlInfo = cand;
         // 首个音源仅返回试听片段、最终由其他音源兜底成功时，同样写明换源原因
